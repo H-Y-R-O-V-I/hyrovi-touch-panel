@@ -1,0 +1,16 @@
+[Unit]
+Description=Hyrovi Touch Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/carsten/programmieren/hyrovi-touch-panel
+ExecStart=/home/carsten/programmieren/hyrovi-touch-panel/.venv/bin/python /home/carsten/programmieren/hyrovi-touch-panel/app.py
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+

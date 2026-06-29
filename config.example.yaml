@@ -1,0 +1,11 @@
+home_assistant_url: "http://home-assistant.local:8123"
+home_assistant_token: ""
+refresh_interval: 5
+fullscreen: false
+screen_width: 800
+screen_height: 480
+entities:
+  main_light: "light.wohnzimmer"
+  temperature: "sensor.wohnzimmer_temperature"
+  humidity: "sensor.wohnzimmer_humidity"
+
