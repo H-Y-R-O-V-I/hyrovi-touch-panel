@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import base64
+import copy
 import html
 import json
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import yaml
+import pygame
 from flask import Flask, Response, redirect, render_template_string, request, url_for
 
 from app.config.loader import (
@@ -22,6 +25,8 @@ from app.config.loader import (
 from app.doctor import run_doctor
 from app.ha.client import HomeAssistantClient
 from app.runtime import CONFIG_FILE, CURRENT_LINK, PREVIOUS_LINK, current_release_dir, read_release_metadata
+from app.ui.dashboard import DashboardApp
+from app.ui.renderer import DashboardRenderer
 from app.update import UpdateError, list_installed_releases, rollback_release, update_release
 
 CONFIG_SAVE_HELPER = "/usr/local/bin/hyrovi-touch-config-save"
@@ -415,6 +420,173 @@ def _dashboard_update_from_form(data: dict[str, Any], form: dict[str, str]) -> t
     return True, "Dashboard updated.", data
 
 
+def _dashboard_preview_state_values(value: str) -> tuple[str, bool]:
+    lowered = value.strip().lower()
+    mapping = {
+        "live": ("", False),
+        "ein": ("on", False),
+        "on": ("on", False),
+        "aus": ("off", False),
+        "off": ("off", False),
+        "nicht verfügbar": ("unavailable", False),
+        "unavailable": ("unavailable", False),
+        "unbekannt": ("unknown", False),
+        "unknown": ("unknown", False),
+        "wird ausgeführt": ("running", True),
+        "running": ("running", True),
+    }
+    return mapping.get(lowered, ("", False))
+
+
+def _dashboard_apply_preview_form(data: dict[str, Any], form: dict[str, str]) -> tuple[bool, str, dict[str, Any], str, str, str]:
+    draft = copy.deepcopy(data)
+    dashboard = draft.setdefault("dashboard", {})
+    pages = dashboard.setdefault("pages", [])
+    page_id = form.get("page_id", "").strip()
+    preview_page_id = form.get("preview_page_id", "").strip() or page_id
+    preview_entity_id = form.get("preview_entity_id", "").strip() or form.get("entity_id", "").strip()
+    page = next((item for item in pages if isinstance(item, dict) and str(item.get("id", "")) == page_id), None)
+    if page is not None:
+        if "page_label" in form:
+            page["label"] = form.get("page_label", "").strip() or page_id
+        if "page_visible" in form:
+            page["visible"] = form.get("page_visible", "off") == "on"
+        if "page_order" in form:
+            try:
+                page["order"] = int(form.get("page_order", page.get("order", 0)))
+            except ValueError:
+                return False, "Invalid page order.", data, preview_page_id, preview_entity_id, ""
+
+    tile_id = form.get("tile_id", "").strip()
+    new_tile_id = form.get("new_tile_id", "").strip()
+    tile_key = new_tile_id if tile_id == "__new__" else tile_id
+    preview_state, preview_busy = _dashboard_preview_state_values(form.get("preview_state", "live"))
+    if tile_key or any(key in form for key in {"entity_id", "label", "type", "action", "icon", "info", "accent", "order", "visible", "show_on_home"}):
+        if page is None:
+            return False, "Page not found.", data, preview_page_id, preview_entity_id, ""
+        tiles = page.setdefault("tiles", [])
+        tile = next((item for item in tiles if isinstance(item, dict) and str(item.get("id", "")) == tile_key), None) if tile_key else None
+        raw_entity = form.get("entity_id", "").strip()
+        raw_type = form.get("type", "").strip()
+        raw_action = form.get("action", "").strip()
+        raw_label = form.get("label", "").strip()
+        raw_icon = form.get("icon", "").strip()
+        raw_info = form.get("info", "").strip()
+        raw_accent = form.get("accent", "").strip()
+        raw_visible = form.get("visible", "off") == "on"
+        raw_show_on_home = form.get("show_on_home", "off") == "on"
+        try:
+            raw_order = int(form.get("order", tile.get("order", 0) if tile else 0))
+        except ValueError:
+            return False, "Invalid tile order.", data, preview_page_id, preview_entity_id, ""
+        if tile is None:
+            if tile_id == "__new__":
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_tile_id):
+                    return False, "Invalid tile id.", data, preview_page_id, preview_entity_id, ""
+                tile_key = new_tile_id
+            elif tile_key:
+                tile = next((item for item in tiles if isinstance(item, dict) and str(item.get("id", "")) == tile_key), None)
+            if tile is None:
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", tile_key):
+                    return False, "Invalid tile id.", data, preview_page_id, preview_entity_id, ""
+                tile = {
+                    "id": tile_key,
+                    "page": page_id,
+                    "type": raw_type or "entity",
+                    "entity_id": raw_entity,
+                    "label": raw_label,
+                    "action": raw_action or "toggle",
+                    "icon": raw_icon,
+                    "info": raw_info,
+                    "order": raw_order,
+                    "visible": raw_visible,
+                    "accent": raw_accent,
+                    "show_on_home": raw_show_on_home,
+                }
+                tiles.append(tile)
+        if tile is not None:
+            tile.update(
+                {
+                    "page": page_id,
+                    "type": raw_type or tile.get("type", "entity"),
+                    "entity_id": raw_entity,
+                    "label": raw_label,
+                    "action": raw_action or tile.get("action", "toggle"),
+                    "icon": raw_icon,
+                    "info": raw_info,
+                    "order": raw_order,
+                    "visible": raw_visible,
+                    "accent": raw_accent,
+                    "show_on_home": raw_show_on_home,
+                }
+            )
+
+    errors = _dashboard_validate(dashboard)
+    if errors:
+        return False, "; ".join(errors), data, preview_page_id, preview_entity_id, ""
+
+    preview_target = preview_entity_id
+    if preview_state and preview_target:
+        target_state = "running" if preview_busy else preview_state
+    else:
+        target_state = ""
+    return True, "Preview updated.", draft, preview_page_id if preview_page_id else page_id, preview_target, target_state
+
+
+def _render_dashboard_preview_png(config: AppConfig, form: dict[str, str]) -> tuple[bool, str, bytes]:
+    raw = read_config_data(config.source_path or CONFIG_FILE)
+    ok, detail, draft, preview_page_id, preview_entity_id, preview_state = _dashboard_apply_preview_form(raw, form)
+    if not ok:
+        return False, detail, b""
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        tmp.write(dump_config_data(draft))
+
+    try:
+        preview_config = load_config(tmp_path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+
+    pygame.font.init()
+    app = DashboardApp(preview_config)
+    surface = pygame.Surface((800, 480))
+    app.screen = surface
+    app._load_fonts()
+    app.input_enabled_at = 0.0
+    app._refresh(force=True)
+    if preview_state and preview_entity_id:
+        payload = dict(app.entity_cache.get(preview_entity_id, {}))
+        if not payload:
+            payload = {"entity_id": preview_entity_id, "attributes": {}}
+        payload.setdefault("attributes", {})
+        if preview_state == "running":
+            payload["state"] = "running"
+        elif preview_state:
+            payload["state"] = preview_state
+        app.entity_cache[preview_entity_id] = payload
+        tile = next((tile for page in preview_config.dashboard.pages for tile in page.tiles if tile.entity_id == preview_entity_id), None)
+        app.tile_states[preview_entity_id] = app._tile_state_for_entity(preview_entity_id, payload, tile=tile)
+        app._update_summary_states()
+    if preview_page_id:
+        app._set_page(preview_page_id)
+    DashboardRenderer(app).render(present=False)
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_png:
+        png_path = Path(tmp_png.name)
+    try:
+        pygame.image.save(surface, png_path)
+        return True, "Preview rendered.", png_path.read_bytes()
+    finally:
+        try:
+            png_path.unlink()
+        except OSError:
+            pass
+
+
 def _save_config_data(data: dict[str, Any]) -> tuple[bool, str]:
     payload = dump_config_data(data)
     proc = subprocess.run(
@@ -735,6 +907,8 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
     selected_tile = next((tile for tile in selected_tiles if str(tile.get("id", "")) == tile_id), selected_tiles[0] if selected_tiles else {})
     selected_tile_id = str(selected_tile.get("id", "")) if isinstance(selected_tile, dict) else ""
     new_tile_id = "" if selected_tile_id and selected_tile_id in tile_ids else selected_tile_id
+    preview_pages = [page for page in pages if page.get("visible")] or pages
+    preview_selected_page_id = selected_page.get("id", "") if isinstance(selected_page, dict) and any(str(page.get("id", "")) == str(selected_page.get("id", "")) for page in preview_pages) else (preview_pages[0].get("id", "") if preview_pages else "")
     template = """
     <!doctype html>
     <html>
@@ -771,6 +945,9 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
         .tile-preview.unavailable { background:#151b23; color:var(--text); border-color:#d64a4a; }
         .tile-preview.unknown { background:#151b23; color:var(--text); border-color:#e08d3b; }
         .toolbar { display:flex; gap:8px; flex-wrap:wrap; }
+        .preview-shell { width:100%; aspect-ratio: 5 / 3; background:#0b0f14; border:1px solid #314152; border-radius:18px; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+        .preview-shell img { width:100%; height:100%; object-fit:contain; display:block; }
+        .preview-status { min-height: 22px; }
         table { width:100%; border-collapse: collapse; }
         th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #273340; vertical-align:top; }
         .sticky { position: sticky; top: 16px; }
@@ -793,6 +970,57 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
           const isNew = select.value === '__new__';
           input.disabled = !isNew;
           input.style.display = isNew ? '' : 'none';
+        }
+        let previewTimer = null;
+        let previewObjectUrl = null;
+        async function renderPreview() {
+          const status = document.getElementById('preview-status');
+          const img = document.getElementById('panel-preview');
+          const tileForm = document.getElementById('tile-form');
+          const previewEntity = document.querySelector('#preview-form input[name="preview_entity_id"]');
+          if (tileForm && previewEntity) {
+            previewEntity.value = tileForm.entity_id.value || '';
+          }
+          if (status) {
+            status.textContent = 'Vorschau wird gerendert...';
+          }
+          const payload = new FormData();
+          ['page-form', 'tile-form', 'preview-form'].forEach((formId) => {
+            const form = document.getElementById(formId);
+            if (!form) return;
+            new FormData(form).forEach((value, key) => payload.append(key, value));
+          });
+          try {
+            const response = await fetch('{{ url_for('dashboard_preview') }}', { method: 'POST', body: payload, headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!response.ok) {
+              const text = await response.text();
+              if (status) {
+                status.textContent = text || 'Vorschau fehlgeschlagen.';
+              }
+              return;
+            }
+            const blob = await response.blob();
+            if (previewObjectUrl) {
+              URL.revokeObjectURL(previewObjectUrl);
+            }
+            previewObjectUrl = URL.createObjectURL(blob);
+            if (img) {
+              img.src = previewObjectUrl;
+            }
+            if (status) {
+              status.textContent = 'Aktualisiert.';
+            }
+          } catch (error) {
+            if (status) {
+              status.textContent = 'Vorschau fehlgeschlagen: ' + error;
+            }
+          }
+        }
+        function schedulePreview() {
+          if (previewTimer) {
+            clearTimeout(previewTimer);
+          }
+          previewTimer = setTimeout(renderPreview, 400);
         }
         function fillTile(entityId, friendly, domain, state) {
           const form = document.getElementById('tile-form');
@@ -822,8 +1050,16 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
           form.page_id.focus();
           form.page_id.scrollIntoView({behavior:'smooth', block:'center'});
           toggleTileIdInput();
+          schedulePreview();
         }
-        document.addEventListener('DOMContentLoaded', toggleTileIdInput);
+        document.addEventListener('DOMContentLoaded', () => {
+          toggleTileIdInput();
+          document.querySelectorAll('#page-form input, #page-form select, #tile-form input, #tile-form select, #preview-form input, #preview-form select').forEach((field) => {
+            field.addEventListener('input', schedulePreview);
+            field.addEventListener('change', schedulePreview);
+          });
+          renderPreview();
+        });
       </script>
     </head>
     <body>
@@ -863,7 +1099,7 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
           <h2>{{ selected_page.label if selected_page else 'Keine Seite' }}</h2>
           <div class="muted">{{ selected_page.id if selected_page else '' }}</div>
           <div class="toolbar" style="margin:12px 0 18px;">
-            <form method="post" action="{{ url_for('dashboard_save') }}">
+            <form id="page-form" method="post" action="{{ url_for('dashboard_save') }}">
               <input type="hidden" name="dashboard_action" value="save_page">
               <input type="hidden" name="page_id" value="{{ selected_page.id }}">
               <label>Label</label>
@@ -967,6 +1203,32 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
             <label><input type="checkbox" name="show_on_home" {% if selected_tile and selected_tile.show_on_home %}checked{% endif %}> Auf Home anzeigen</label>
             <button class="btn primary" type="submit">Speichern</button>
           </form>
+          <div style="margin-top:18px;">
+            <h3>Panel-Vorschau</h3>
+            <div id="preview-status" class="preview-status muted">Bereit.</div>
+            <form id="preview-form" onsubmit="return false;">
+              <label>Vorschauseite</label>
+              <select name="preview_page_id" id="preview-page">
+                {% for page in preview_pages %}
+                  <option value="{{ page.id }}" {% if page.id == preview_selected_page_id %}selected{% endif %}>{{ page.label }}</option>
+                {% endfor %}
+              </select>
+              <label>Vorschauzustand</label>
+              <select name="preview_state" id="preview-state">
+                <option value="live" selected>Live</option>
+                <option value="on">Ein</option>
+                <option value="off">Aus</option>
+                <option value="unavailable">Nicht verfügbar</option>
+                <option value="unknown">Unbekannt</option>
+                <option value="running">Wird ausgeführt</option>
+              </select>
+              <input type="hidden" name="preview_entity_id" value="{{ selected_tile.entity_id if selected_tile else '' }}">
+              <button class="btn" type="button" onclick="renderPreview()">Vorschau aktualisieren</button>
+            </form>
+            <div class="preview-shell" style="margin-top:12px;">
+              <img id="panel-preview" alt="Panel-Vorschau" width="800" height="480">
+            </div>
+          </div>
           <h3 style="margin-top:18px;">Entities</h3>
           <input id="entity-filter" oninput="filterEntities()" placeholder="entity_id, Friendly Name, Domain, Zustand">
           <div style="max-height: 250px; overflow:auto;">
@@ -1007,6 +1269,8 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
         selected_tile_id=selected_tile_id,
         new_tile_id=new_tile_id,
         tile_ids=tile_ids,
+        preview_pages=preview_pages,
+        preview_selected_page_id=preview_selected_page_id,
         entity_rows=entity_rows,
         dashboard_yaml=_dashboard_yaml(config),
         message=message,
@@ -1132,6 +1396,17 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
             page_id=request.args.get("page_id", ""),
             tile_id=request.args.get("tile_id", ""),
         )
+
+    @app.post("/dashboard/preview")
+    def dashboard_preview() -> Response:
+        config = current_config()
+        ok, detail, png = _render_dashboard_preview_png(config, dict(request.form))
+        if not ok:
+            return Response(detail, status=400, mimetype="text/plain; charset=utf-8")
+        response = Response(png, status=200, mimetype="image/png")
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.post("/dashboard/save")
     def dashboard_save() -> str:

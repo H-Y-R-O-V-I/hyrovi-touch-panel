@@ -7,7 +7,13 @@ from unittest.mock import patch
 
 import yaml
 
-from app.admin.web import create_app, _dashboard_update_from_form, _dashboard_validate, _merge_home_assistant_config
+from app.admin.web import (
+    create_app,
+    _dashboard_apply_preview_form,
+    _dashboard_update_from_form,
+    _dashboard_validate,
+    _merge_home_assistant_config,
+)
 from app.ha.client import HomeAssistantResult
 
 
@@ -174,6 +180,87 @@ class AdminWebTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(detail, "Dashboard updated.")
         self.assertEqual(updated["dashboard"]["pages"][0]["tiles"][0]["id"], "living_room_light")
+
+    def test_dashboard_preview_form_applies_unsaved_tile_changes(self) -> None:
+        data = {
+            "dashboard": {
+                "pages": [
+                    {
+                        "id": "home",
+                        "label": "Home",
+                        "visible": True,
+                        "order": 0,
+                        "tiles": [
+                            {
+                                "id": "lamp",
+                                "page": "home",
+                                "type": "entity",
+                                "entity_id": "switch.lampe_wohnzimmer",
+                                "label": "Lampe",
+                                "action": "toggle",
+                                "icon": "",
+                                "info": "",
+                                "order": 0,
+                                "visible": True,
+                                "accent": "",
+                                "show_on_home": False,
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        ok, detail, draft, preview_page_id, preview_entity_id, preview_state = _dashboard_apply_preview_form(
+            data,
+            {
+                "page_id": "home",
+                "page_label": "Wohnzimmer",
+                "page_order": "2",
+                "page_visible": "on",
+                "tile_id": "lamp",
+                "entity_id": "switch.lampe_wohnzimmer",
+                "type": "entity",
+                "action": "toggle",
+                "label": "Wohnzimmerlampe",
+                "icon": "",
+                "info": "",
+                "accent": "#ffcc00",
+                "order": "1",
+                "visible": "on",
+                "show_on_home": "on",
+                "preview_page_id": "home",
+                "preview_entity_id": "switch.lampe_wohnzimmer",
+                "preview_state": "off",
+            },
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(detail, "Preview updated.")
+        self.assertEqual(preview_page_id, "home")
+        self.assertEqual(preview_entity_id, "switch.lampe_wohnzimmer")
+        self.assertEqual(preview_state, "off")
+        self.assertEqual(draft["dashboard"]["pages"][0]["label"], "Wohnzimmer")
+        self.assertEqual(draft["dashboard"]["pages"][0]["tiles"][0]["label"], "Wohnzimmerlampe")
+
+    @patch("app.admin.web._render_dashboard_preview_png", return_value=(True, "Preview rendered.", b"PNGDATA"))
+    def test_dashboard_preview_endpoint_returns_png(self, _mock_preview) -> None:
+        config_path = self._config_file()
+        app = create_app(config_path)
+        client = app.test_client()
+
+        response = client.post(
+            "/dashboard/preview",
+            data={
+                "page_id": "home",
+                "preview_page_id": "home",
+                "preview_entity_id": "switch.lampe_wohnzimmer",
+                "preview_state": "live",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "image/png")
+        self.assertEqual(response.get_data(), b"PNGDATA")
 
 
 if __name__ == "__main__":

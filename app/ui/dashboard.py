@@ -13,6 +13,7 @@ from app.runtime import current_release_dir, read_release_metadata
 from app.ui.components import clamp, panel, rounded_rect, text, wrap_text
 from app.ui.models import DashboardPageConfig, DashboardTileConfig, TileState
 from app.ui.theme import BASE_HEIGHT, BASE_WIDTH, CONTENT_BOTTOM, CONTENT_TOP, HEADER_HEIGHT, NAV_HEIGHT, Theme
+from app.ui.renderer import DashboardRenderer
 
 
 THEME = Theme()
@@ -338,21 +339,7 @@ class DashboardApp:
         return f"{state} {unit}".strip()
 
     def _render(self) -> None:
-        assert self.screen is not None
-        width, height = self.screen.get_size()
-        scale = self._scale()
-        offset_x = int((width - BASE_WIDTH * scale) / 2)
-        offset_y = int((height - BASE_HEIGHT * scale) / 2)
-        self.targets = []
-
-        self.screen.fill(THEME.bg)
-        self._draw_background(scale, offset_x, offset_y)
-        self._draw_header(scale, offset_x, offset_y)
-        if self.snapshot.error:
-            self._draw_banner(scale, offset_x, offset_y, self.snapshot.error)
-        self._draw_page(scale, offset_x, offset_y)
-        self._draw_navigation(scale, offset_x, offset_y)
-        pygame.display.flip()
+        DashboardRenderer(self).render(present=True)
 
     def _draw_background(self, scale: float, offset_x: int, offset_y: int) -> None:
         assert self.screen is not None
@@ -488,6 +475,9 @@ class DashboardApp:
             if target.rect.collidepoint(pos):
                 return target
         return None
+
+    def _target(self, label: str, rect: pygame.Rect, action: Callable[[], None], *, active: bool = False, target_id: str = "") -> HitTarget:
+        return HitTarget(label=label, rect=rect, action=action, active=active, target_id=target_id)
 
     def _effective_pages(self) -> list[DashboardPageConfig]:
         pages = [page for page in self.config.dashboard.pages if page.visible]
