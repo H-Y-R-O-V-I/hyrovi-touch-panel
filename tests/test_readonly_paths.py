@@ -126,6 +126,9 @@ class ReadOnlyPathTests(unittest.TestCase):
             self._response(200, [
                 {"entity_id": "switch.lampe_wohnzimmer", "state": "off", "attributes": {"friendly_name": "Wohnzimmer"}},
             ]),
+            self._response(200, {"entity_id": "switch.lampe_wohnzimmer", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "sensor.temp", "state": "21.4", "attributes": {}}),
+            self._response(200, {"entity_id": "sensor.humidity", "state": "48", "attributes": {}}),
         ]
         app = create_app(self._config_file())
         client = app.test_client()

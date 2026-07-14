@@ -26,7 +26,7 @@ class CliReadOnlyTests(unittest.TestCase):
         return response
 
     @patch("app.cli.load_config")
-    @patch("app.cli.requests.request")
+    @patch("app.ha.client.requests.request")
     def test_ha_test_uses_only_get_requests(self, mock_request, mock_load_config) -> None:
         config = MagicMock()
         config.home_assistant.url = "http://homeassistant.local:8123"

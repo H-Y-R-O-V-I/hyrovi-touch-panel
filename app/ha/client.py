@@ -197,8 +197,6 @@ class HomeAssistantClient:
         refreshed = self._refresh_state_until(entity_id, expected_state)
         if refreshed.ok and str((refreshed.data or {}).get("state", "")).lower() == expected_state:
             return refreshed
-        if not service_result.ok and refreshed.ok:
-            return refreshed
         if not service_result.ok:
             return service_result
         return HomeAssistantResult(
