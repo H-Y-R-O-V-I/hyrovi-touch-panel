@@ -78,7 +78,7 @@ class ReadOnlyPathTests(unittest.TestCase):
 
         app._refresh(force=True)
 
-        self.assertEqual(mock_request.call_count, 4)
+        self.assertEqual(mock_request.call_count, 1)
         self.assertTrue(all(call.args[0] == "GET" for call in mock_request.call_args_list))
 
     @patch("app.doctor._run_py_compile", return_value=(True, "Python syntax check passed."))

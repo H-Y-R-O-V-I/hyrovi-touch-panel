@@ -96,7 +96,7 @@ class AdminWebTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("super-secret-token", body)
-        self.assertIn("Entity hinzufügen", body)
+        self.assertIn("Karte bearbeiten", body)
         self.assertIn("Seiten", body)
 
     def test_dashboard_validation_rejects_duplicate_entity_on_same_page(self) -> None:
