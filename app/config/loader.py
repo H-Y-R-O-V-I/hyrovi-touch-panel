@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
@@ -33,9 +34,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rollback_on_failed_healthcheck": True,
     },
     "entities": {
-        "main_light": "light.extended_color_light_3",
-        "temperature": "sensor.wohnzimmer_temperatur",
-        "humidity": "sensor.wohnzimmer_luftfeuchtigkeit",
+        "main_light": "light.ikea_of_sweden_ormanas_led_strip",
+        "temperature": "sensor.tesla_wall_connector_mcu_temperatur",
+        "humidity": "sensor.solaredge_speicherniveau",
     },
     "admin": {
         "pin": "",
@@ -108,6 +109,56 @@ class AppConfig:
         return self.ui.screen_width, self.ui.screen_height
 
 
+class HomeAssistantUrlError(ValueError):
+    pass
+
+
+def normalize_home_assistant_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        raise HomeAssistantUrlError("Home Assistant URL is empty.")
+
+    parsed = urlsplit(raw)
+    if parsed.scheme not in {"http", "https"}:
+        raise HomeAssistantUrlError("Home Assistant URL must start with http:// or https://.")
+    if parsed.query or parsed.fragment:
+        raise HomeAssistantUrlError("Home Assistant URL must not contain query parameters or fragments.")
+
+    host = parsed.netloc.strip()
+    path = parsed.path or ""
+
+    if not host:
+        candidate = path.lstrip("/")
+        if not candidate or "/" in candidate:
+            raise HomeAssistantUrlError(
+                "Home Assistant URL must include a host, for example http://homeassistant.local:8123."
+            )
+        host = candidate
+    elif path and set(path) != {"/"}:
+        raise HomeAssistantUrlError(
+            "Home Assistant URL must not contain a path. Use the base host and optional port only."
+        )
+
+    if not host:
+        raise HomeAssistantUrlError(
+            "Home Assistant URL must include a host, for example http://homeassistant.local:8123."
+        )
+
+    return urlunsplit((parsed.scheme, host, "", "", ""))
+
+
+def _normalize_optional_home_assistant_url(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        return value
+    try:
+        return normalize_home_assistant_url(stripped)
+    except HomeAssistantUrlError:
+        return value
+
+
 def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     merged: dict[str, Any] = dict(base)
     for key, value in override.items():
@@ -128,6 +179,14 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return loaded
 
 
+def read_config_data(path: Path) -> dict[str, Any]:
+    return _load_yaml(path)
+
+
+def dump_config_data(data: dict[str, Any]) -> str:
+    return yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+
+
 def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     value = data.get(key, {})
     return value if isinstance(value, dict) else {}
@@ -136,7 +195,16 @@ def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
 def load_config(path: Path) -> AppConfig:
     exists = path.exists()
     loaded = _load_yaml(path)
+    if isinstance(loaded.get("home_assistant"), dict):
+        loaded = dict(loaded)
+        loaded["home_assistant"] = dict(loaded["home_assistant"])
+        loaded["home_assistant"]["url"] = _normalize_optional_home_assistant_url(
+            loaded["home_assistant"].get("url", "")
+        )
     merged = _merge_dicts(DEFAULT_CONFIG, loaded)
+    merged_home_assistant = dict(_section(merged, "home_assistant"))
+    merged_home_assistant["url"] = _normalize_optional_home_assistant_url(merged_home_assistant.get("url", ""))
+    merged["home_assistant"] = merged_home_assistant
 
     return AppConfig(
         home_assistant=HomeAssistantConfig(**_section(merged, "home_assistant")),

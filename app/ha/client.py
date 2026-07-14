@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urljoin
 
 import requests
 
-from app.config.loader import AppConfig
+from app.config.loader import AppConfig, HomeAssistantUrlError, normalize_home_assistant_url
 
 
 @dataclass(slots=True)
@@ -14,12 +13,13 @@ class HomeAssistantResult:
     ok: bool
     source: str
     detail: str
-    data: dict[str, Any] | None = None
+    data: Any | None = None
+    status_code: int | None = None
 
 
 class HomeAssistantClient:
     def __init__(self, url: str, token: str, timeout: float = 4.0) -> None:
-        self.url = url.rstrip("/")
+        self.url = url.strip()
         self.token = token.strip()
         self.timeout = timeout
 
@@ -31,11 +31,68 @@ class HomeAssistantClient:
     def enabled(self) -> bool:
         return bool(self.url and self.token)
 
+    def _base_url(self) -> str:
+        return normalize_home_assistant_url(self.url)
+
+    def _api_url(self, suffix: str = "", *, trailing_slash: bool = False) -> str:
+        base = self._base_url()
+        if suffix:
+            return f"{base}/api/{suffix.lstrip('/')}"
+        return f"{base}/api/" if trailing_slash else f"{base}/api"
+
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.token}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def _request(self, method: str, suffix: str = "", *, json: dict[str, Any] | None = None, trailing_slash: bool = False) -> HomeAssistantResult:
+        try:
+            url = self._api_url(suffix, trailing_slash=trailing_slash)
+        except HomeAssistantUrlError as exc:
+            return HomeAssistantResult(ok=False, source="config", detail=f"Invalid Home Assistant URL: {exc}")
+
+        try:
+            response = requests.request(
+                method,
+                url,
+                headers=self._headers(),
+                json=json,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            response = exc.response
+            status = response.status_code if response is not None else None
+            if status == 401:
+                detail = "Home Assistant authentication failed (401 Unauthorized)."
+            elif status == 404:
+                detail = "Home Assistant resource not found (404 Not Found)."
+            else:
+                detail = f"Home Assistant returned HTTP {status if status is not None else 'error'}."
+            return HomeAssistantResult(ok=False, source="ha", detail=detail, status_code=status)
+        except requests.Timeout:
+            return HomeAssistantResult(ok=False, source="ha", detail="Timeout while contacting Home Assistant.")
+        except requests.ConnectionError as exc:
+            message = str(exc).lower()
+            if any(marker in message for marker in ("name or service not known", "temporary failure in name resolution", "nodename nor servname provided", "failed to resolve", "dns")):
+                detail = "DNS error while resolving the Home Assistant host."
+            else:
+                detail = f"Connection error while contacting Home Assistant: {exc}"
+            return HomeAssistantResult(ok=False, source="ha", detail=detail)
+        except requests.InvalidURL as exc:
+            return HomeAssistantResult(ok=False, source="config", detail=f"Invalid Home Assistant URL: {exc}")
+        except requests.RequestException as exc:
+            return HomeAssistantResult(ok=False, source="ha", detail=f"Home Assistant request failed: {exc}")
+
+        payload: Any | None = None
+        if response.content:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = response.text
+
+        return HomeAssistantResult(ok=True, source="ha", detail="ok", data=payload, status_code=response.status_code)
 
     def healthcheck(self) -> HomeAssistantResult:
         if not self.enabled:
@@ -45,27 +102,7 @@ class HomeAssistantClient:
                 detail="Home Assistant not configured. Mock mode is active.",
                 data={"connected": False},
             )
-
-        try:
-            response = requests.get(
-                urljoin(self.url + "/", "api/"),
-                headers=self._headers(),
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            return HomeAssistantResult(
-                ok=False,
-                source="ha",
-                detail=f"Home Assistant unreachable: {exc}",
-            )
-
-        return HomeAssistantResult(
-            ok=True,
-            source="ha",
-            detail="Home Assistant API reachable.",
-            data={"connected": True},
-        )
+        return self._request("GET", trailing_slash=True)
 
     def get_state(self, entity_id: str) -> HomeAssistantResult:
         if not self.enabled:
@@ -75,19 +112,15 @@ class HomeAssistantClient:
                 detail=f"Mock state for {entity_id}",
                 data={"entity_id": entity_id, "state": "unknown", "attributes": {}},
             )
+        result = self._request("GET", f"states/{entity_id}")
+        if not result.ok and result.status_code == 404:
+            result.detail = f"Entity not found: {entity_id}"
+        return result
 
-        try:
-            response = requests.get(
-                urljoin(self.url + "/", f"api/states/{entity_id}"),
-                headers=self._headers(),
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except requests.RequestException as exc:
-            return HomeAssistantResult(ok=False, source="ha", detail=str(exc))
-
-        return HomeAssistantResult(ok=True, source="ha", detail="ok", data=payload)
+    def list_states(self) -> HomeAssistantResult:
+        if not self.enabled:
+            return HomeAssistantResult(ok=False, source="mock", detail="Home Assistant not configured.", data=[])
+        return self._request("GET", "states")
 
     def call_service(self, domain: str, service: str, data: dict[str, Any]) -> HomeAssistantResult:
         if not self.enabled:
@@ -97,17 +130,44 @@ class HomeAssistantClient:
                 detail=f"Mock call to {domain}.{service}",
                 data={"domain": domain, "service": service, "data": data},
             )
+        return self._request("POST", f"services/{domain}/{service}", json=data)
 
-        try:
-            response = requests.post(
-                urljoin(self.url + "/", f"api/services/{domain}/{service}"),
-                headers=self._headers(),
-                json=data,
-                timeout=self.timeout,
+    def toggle_light(self, entity_id: str) -> HomeAssistantResult:
+        if not self.enabled:
+            current = self.get_state(entity_id)
+            if not current.ok:
+                return current
+            state = str((current.data or {}).get("state", "unknown")).lower()
+            return HomeAssistantResult(
+                ok=False,
+                source="mock",
+                detail=f"Mock toggle for {entity_id}",
+                data={"entity_id": entity_id, "state": state},
             )
-            response.raise_for_status()
-            payload = response.json() if response.content else {}
-        except requests.RequestException as exc:
-            return HomeAssistantResult(ok=False, source="ha", detail=str(exc))
 
-        return HomeAssistantResult(ok=True, source="ha", detail="service called", data=payload)
+        current = self.get_state(entity_id)
+        if not current.ok:
+            return current
+
+        state = str((current.data or {}).get("state", "")).lower()
+        if state == "on":
+            service = "turn_off"
+        elif state == "off":
+            service = "turn_on"
+        elif state in {"unknown", "unavailable", ""}:
+            service = "turn_on"
+        else:
+            return HomeAssistantResult(
+                ok=False,
+                source="ha",
+                detail=f"Cannot toggle {entity_id}: current state is {state or 'unknown' }.",
+                data=current.data,
+            )
+
+        service_result = self.call_service("light", service, {"entity_id": entity_id})
+        if not service_result.ok:
+            return service_result
+        refreshed = self.get_state(entity_id)
+        if not refreshed.ok:
+            return refreshed
+        return refreshed

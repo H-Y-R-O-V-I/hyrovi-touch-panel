@@ -29,6 +29,7 @@ class PanelSnapshot:
     light_on: bool = False
     temperature_value: float = 21.8
     humidity_value: float = 46.0
+    last_successful_fetch: str = "Noch keiner"
     error: str = ""
 
 
@@ -157,24 +158,35 @@ class DashboardApp:
         self.snapshot.release = metadata.version if metadata else "unknown"
         if not self.config.exists:
             self.snapshot.error = f"Konfig fehlt: {self.config.source_path}"
+
         ha = self.client.healthcheck()
-        self.snapshot.connected = ha.ok
-        self.snapshot.ha_state = "Verbunden" if ha.ok else ("Mock" if ha.source == "mock" else "Offline")
-        if ha.ok or ha.source == "mock":
-            if self.config.exists:
-                self.snapshot.error = ""
+        self.snapshot.connected = bool(ha.ok and ha.source == "ha")
+        if ha.source == "mock":
+            self.snapshot.ha_state = "Mock"
+        elif ha.ok:
+            self.snapshot.ha_state = "Verbunden"
         else:
+            self.snapshot.ha_state = "Offline"
             self.snapshot.error = ha.detail
 
-        if self.client.enabled:
+        if self.client.enabled and ha.ok:
             light = self.client.get_state(self.config.entities.main_light)
             temp = self.client.get_state(self.config.entities.temperature)
             humidity = self.client.get_state(self.config.entities.humidity)
-            self.snapshot.light_state = self._state_label(light.data)
-            self.snapshot.light_on = self._is_on(light.data)
-            self.snapshot.temperature = self._format_value(temp.data, "temperature")
-            self.snapshot.humidity = self._format_value(humidity.data, "humidity")
-        else:
+            if light.ok and temp.ok and humidity.ok and isinstance(light.data, dict) and isinstance(temp.data, dict) and isinstance(humidity.data, dict):
+                self.snapshot.light_state = self._state_label(light.data)
+                self.snapshot.light_on = self._is_on(light.data)
+                self.snapshot.temperature = self._format_value(temp.data, "temperature")
+                self.snapshot.humidity = self._format_value(humidity.data, "humidity")
+                self.snapshot.last_successful_fetch = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                self.snapshot.error = ""
+            else:
+                details = [result.detail for result in (light, temp, humidity) if not result.ok]
+                if details:
+                    self.snapshot.error = "; ".join(details)
+        elif self.client.enabled and not ha.ok:
+            self.snapshot.error = ha.detail
+        elif not self.client.enabled:
             if force:
                 self.snapshot.light_state = "Aus"
             jitter = 0.0 if force else random.uniform(-0.12, 0.12)
@@ -188,6 +200,15 @@ class DashboardApp:
     def _state_label(self, payload: dict | None) -> str:
         if not payload:
             return "Unbekannt"
+        state = str(payload.get("state", "unknown")).lower()
+        if state == "on":
+            return "Ein"
+        if state == "off":
+            return "Aus"
+        if state == "unavailable":
+            return "Nicht verfügbar"
+        if state == "unknown":
+            return "Unbekannt"
         return str(payload.get("state", "unknown"))
 
     def _is_on(self, payload: dict | None) -> bool:
@@ -198,7 +219,11 @@ class DashboardApp:
     def _format_value(self, payload: dict | None, kind: str) -> str:
         if not payload:
             return "--"
-        state = payload.get("state", "--")
+        state = str(payload.get("state", "--"))
+        if state.lower() == "unavailable":
+            return "Nicht verfügbar"
+        if state.lower() == "unknown":
+            return "Unbekannt"
         unit = payload.get("attributes", {}).get("unit_of_measurement", "°C" if kind == "temperature" else "%")
         return f"{state} {unit}".strip()
 
@@ -265,6 +290,7 @@ class DashboardApp:
             row = index // 2
             rect = self._rect(24 + col * 380, 116 + row * 98, 356, 82, scale, offset_x, offset_y)
             self._status_card(label, value, accent, rect, scale)
+        self._draw_text(f"Letzter erfolgreicher Abruf: {self.snapshot.last_successful_fetch}", offset_x + self._scale_value(24, scale), offset_y + self._scale_value(418, scale), "small", (160, 171, 182))
         self._touch_button("Lichter", self._rect(24, 330, 236, 74, scale, offset_x, offset_y), scale, lambda: self._set_page("lights"), accent=self.page == "lights")
         self._touch_button("System", self._rect(282, 330, 236, 74, scale, offset_x, offset_y), scale, lambda: self._set_page("system"), accent=self.page == "system")
         self._touch_button("Aktualisieren", self._rect(540, 330, 236, 74, scale, offset_x, offset_y), scale, self._force_refresh)
@@ -364,8 +390,18 @@ class DashboardApp:
         self.page = page
 
     def _toggle_light(self) -> None:
-        self.snapshot.light_on = not self.snapshot.light_on
-        self.snapshot.light_state = "Ein" if self.snapshot.light_on else "Aus"
+        if not self.client.enabled:
+            self.snapshot.light_on = not self.snapshot.light_on
+            self.snapshot.light_state = "Ein" if self.snapshot.light_on else "Aus"
+            return
+
+        result = self.client.toggle_light(self.config.entities.main_light)
+        if result.ok and isinstance(result.data, dict):
+            self.snapshot.light_state = self._state_label(result.data)
+            self.snapshot.light_on = self._is_on(result.data)
+            self.snapshot.error = ""
+        else:
+            self.snapshot.error = result.detail
 
     def _force_refresh(self) -> None:
         self._refresh(force=True)

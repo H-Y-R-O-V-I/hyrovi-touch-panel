@@ -7,10 +7,25 @@ Wants=network-online.target
 Type=simple
 User=hyrovi-panel
 Group=hyrovi-panel
+SupplementaryGroups=video render input tty audio
 WorkingDirectory=/opt/hyrovi-touch-panel/current
 Environment=PYTHONUNBUFFERED=1
-Environment=SDL_VIDEO_CENTERED=1
+Environment=PYTHONPATH=/opt/hyrovi-touch-panel/current
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hyrovi-touch-panel/pycache
+Environment=XDG_RUNTIME_DIR=/run/hyrovi-touch-panel
+Environment=SDL_VIDEODRIVER=kmsdrm
 Environment=SDL_AUDIODRIVER=dummy
+Environment=SDL_VIDEO_KMSDRM_DEVICE_INDEX=0
+Environment=PYGAME_HIDE_SUPPORT_PROMPT=1
+RuntimeDirectory=hyrovi-touch-panel
+RuntimeDirectoryMode=0755
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
 ExecStart=/opt/hyrovi-touch-panel/venv/bin/python /opt/hyrovi-touch-panel/current/app.py --config /etc/hyrovi-touch-panel/config.yaml
 Restart=always
 RestartSec=3

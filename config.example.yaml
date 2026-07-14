@@ -23,9 +23,9 @@ updates:
   rollback_on_failed_healthcheck: true
 
 entities:
-  main_light: "light.extended_color_light_3"
-  temperature: "sensor.wohnzimmer_temperatur"
-  humidity: "sensor.wohnzimmer_luftfeuchtigkeit"
+  main_light: "light.ikea_of_sweden_ormanas_led_strip"
+  temperature: "sensor.tesla_wall_connector_mcu_temperatur"
+  humidity: "sensor.solaredge_speicherniveau"
 
 admin:
   pin: ""

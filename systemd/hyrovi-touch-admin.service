@@ -9,6 +9,8 @@ User=hyrovi-panel
 Group=hyrovi-panel
 WorkingDirectory=/opt/hyrovi-touch-panel/current
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/hyrovi-touch-panel/current
+Environment=PYTHONPYCACHEPREFIX=/var/cache/hyrovi-touch-panel/pycache
 ExecStart=/opt/hyrovi-touch-panel/venv/bin/python /opt/hyrovi-touch-panel/current/admin/server.py
 Restart=always
 RestartSec=3

@@ -18,6 +18,7 @@ CONFIG_DIR="/etc/hyrovi-touch-panel"
 CONFIG_FILE="${CONFIG_DIR}/config.yaml"
 STATE_DIR="/var/lib/hyrovi-touch-panel"
 LOG_DIR="/var/log/hyrovi-touch-panel"
+CACHE_DIR="/var/cache/hyrovi-touch-panel/pycache"
 USER_NAME="hyrovi-panel"
 TIMESTAMP="$(date -u +%Y%m%d-%H%M%S)"
 GIT_SHA="$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo local)"
@@ -30,22 +31,27 @@ apt-get install -y \
   python3-venv \
   python3-pip \
   python3-pygame \
+  python3-yaml \
   git \
   curl \
   jq \
   unclutter \
   evtest \
   libinput-tools \
+  libegl1 \
+  libegl-mesa0 \
+  libgles2 \
   rsync
 
 if ! id -u "${USER_NAME}" >/dev/null 2>&1; then
   useradd --system --user-group --home-dir "${STATE_DIR}" --create-home --shell /usr/sbin/nologin "${USER_NAME}"
 fi
-usermod -a -G video,render,input,systemd-journal "${USER_NAME}" || true
+usermod -a -G video,render,input,systemd-journal,tty,audio "${USER_NAME}" || true
 
-install -d -o "${USER_NAME}" -g "${USER_NAME}" "${INSTALL_ROOT}" "${RELEASES_DIR}" "${SHARED_DIR}" "${STATE_DIR}"
-install -d -o root -g "${USER_NAME}" "${CONFIG_DIR}"
-install -d -o root -g root "${LOG_DIR}"
+install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0755 "${INSTALL_ROOT}" "${RELEASES_DIR}" "${SHARED_DIR}" "${STATE_DIR}"
+install -d -o root -g "${USER_NAME}" -m 0750 "${CONFIG_DIR}"
+install -d -o root -g root -m 0755 "${LOG_DIR}"
+install -d -o "${USER_NAME}" -g "${USER_NAME}" -m 0755 "${CACHE_DIR}"
 
 mkdir -p "${RELEASE_DIR}"
 rsync -a \
@@ -163,20 +169,23 @@ fi
 
 install -m 0755 "${REPO_DIR}/scripts/hyrovi-panel" /usr/local/bin/hyrovi-panel
 install -m 0755 "${REPO_DIR}/scripts/doctor.sh" /usr/local/bin/hyrovi-panel-doctor
+install -m 0755 "${REPO_DIR}/scripts/hyrovi-touch-config-save" /usr/local/bin/hyrovi-touch-config-save
 
 install -m 0644 "${REPO_DIR}/systemd/hyrovi-touch-panel.service" /etc/systemd/system/hyrovi-touch-panel.service
 install -m 0644 "${REPO_DIR}/systemd/hyrovi-touch-admin.service" /etc/systemd/system/hyrovi-touch-admin.service
 install -m 0644 "${REPO_DIR}/systemd/hyrovi-touch-update-on-boot.service" /etc/systemd/system/hyrovi-touch-update-on-boot.service
 
-cat >/etc/sudoers.d/hyrovi-touch-panel <<'EOF'
-hyrovi-panel ALL=(root) NOPASSWD: /usr/bin/systemctl restart hyrovi-touch-panel.service, /usr/bin/systemctl restart hyrovi-touch-admin.service, /usr/bin/systemctl restart hyrovi-touch-update-on-boot.service, /usr/bin/systemctl stop hyrovi-touch-panel.service, /usr/bin/systemctl stop hyrovi-touch-admin.service, /usr/bin/systemctl start hyrovi-touch-panel.service, /usr/bin/systemctl start hyrovi-touch-admin.service, /usr/bin/systemctl daemon-reload
-EOF
+cat >/etc/sudoers.d/hyrovi-touch-panel <<'SUDOERS'
+hyrovi-panel ALL=(root) NOPASSWD: /usr/bin/systemctl restart hyrovi-touch-panel.service, /usr/bin/systemctl restart hyrovi-touch-admin.service, /usr/bin/systemctl restart hyrovi-touch-update-on-boot.service, /usr/bin/systemctl stop hyrovi-touch-panel.service, /usr/bin/systemctl stop hyrovi-touch-admin.service, /usr/bin/systemctl start hyrovi-touch-panel.service, /usr/bin/systemctl start hyrovi-touch-admin.service, /usr/bin/systemctl daemon-reload, /usr/local/bin/hyrovi-touch-config-save
+SUDOERS
 chmod 0440 /etc/sudoers.d/hyrovi-touch-panel
 
 systemctl daemon-reload
 systemctl enable hyrovi-touch-panel.service
 systemctl enable hyrovi-touch-admin.service
 systemctl enable hyrovi-touch-update-on-boot.service
+systemctl disable --now getty@tty1.service || true
+systemctl mask getty@tty1.service || true
 systemctl restart hyrovi-touch-panel.service || true
 systemctl restart hyrovi-touch-admin.service || true
 

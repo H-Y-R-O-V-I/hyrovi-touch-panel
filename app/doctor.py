@@ -6,10 +6,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import urljoin
 
 import requests
-from app.config.loader import AppConfig, load_config
+
+from app.config.loader import AppConfig, HomeAssistantUrlError, load_config
 from app.ha.client import HomeAssistantClient
 from app.runtime import (
     ADMIN_SERVICE,
@@ -66,13 +66,15 @@ def _check(name: str, ok: bool, detail: str) -> CheckResult:
 
 
 def _run_py_compile(paths: Iterable[Path]) -> tuple[bool, str]:
-    files = [str(path) for path in paths if path.suffix == ".py" and path.exists()]
+    files = [path for path in paths if path.suffix == ".py" and path.exists()]
     if not files:
         return False, "No Python files found."
-    cmd = [sys.executable, "-m", "py_compile", *files]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        return False, (proc.stderr or proc.stdout).strip()
+    for path in files:
+        try:
+            source = path.read_text(encoding="utf-8")
+            compile(source, str(path), "exec")
+        except Exception as exc:
+            return False, f"{path}: {exc}"
     return True, "Python syntax check passed."
 
 
@@ -93,19 +95,47 @@ def _display_plausible() -> tuple[bool, str]:
 
 
 def _touch_plausible() -> tuple[bool, str]:
-    proc = Path("/proc/bus/input/devices")
-    if not proc.exists():
-        return False, "No input device listing available."
-    content = proc.read_text(encoding="utf-8", errors="ignore").lower()
-    if "touch" in content or "goodix" in content or "ft" in content:
-        return True, "Touch device hints found in /proc/bus/input/devices."
-    return False, "No clear touchscreen entry found."
+    proc = subprocess.run(["libinput", "list-devices"], text=True, capture_output=True)
+    if proc.returncode == 0:
+        blocks = [block.strip() for block in proc.stdout.split("\n\n") if block.strip()]
+        for block in blocks:
+            lower = block.lower()
+            if "capabilities:" in lower and "touch" in lower:
+                return True, "libinput reports a device with Capabilities: touch."
+    fallback = Path("/proc/bus/input/devices")
+    if fallback.exists():
+        content = fallback.read_text(encoding="utf-8", errors="ignore").lower()
+        if "touch" in content:
+            return True, "Touch hints found in /proc/bus/input/devices."
+    return False, "No clear touchscreen entry found via libinput."
 
 
 def _ha_check(config: AppConfig) -> CheckResult:
     client = HomeAssistantClient.from_config(config)
     result = client.healthcheck()
+    if result.ok and result.source == "mock":
+        return _check("Home Assistant", True, result.detail)
     return _check("Home Assistant", result.ok, result.detail)
+
+
+def _ha_url_check(config: AppConfig) -> CheckResult:
+    if not config.ha_enabled:
+        return _check("HA URL", True, "Skipped: Home Assistant URL/token not configured.")
+
+    client = HomeAssistantClient.from_config(config)
+    try:
+        url = client._api_url(trailing_slash=True)
+    except HomeAssistantUrlError as exc:
+        return _check("HA URL", False, f"Invalid Home Assistant URL: {exc}")
+
+    try:
+        response = requests.get(url, headers={"Authorization": f"Bearer {client.token}"}, timeout=4.0)
+        ok = response.ok
+        detail = f"HA URL reachable: HTTP {response.status_code}"
+    except requests.RequestException as exc:
+        ok = False
+        detail = f"HA URL check failed: {exc}"
+    return _check("HA URL", ok, detail)
 
 
 def run_doctor(config_path: Path = CONFIG_FILE) -> DoctorReport:
@@ -144,21 +174,6 @@ def run_doctor(config_path: Path = CONFIG_FILE) -> DoctorReport:
     touch_ok, touch_detail = _touch_plausible()
     checks.append(_check("Touch", touch_ok, touch_detail))
     checks.append(_ha_check(config))
-
-    if config.ha_enabled:
-        try:
-            response = requests.get(
-                urljoin(config.home_assistant.url.rstrip("/") + "/", "api/"),
-                headers={"Authorization": f"Bearer {config.home_assistant.token}"},
-                timeout=4.0,
-            )
-            ok = response.ok
-            detail = f"HA URL reachable: HTTP {response.status_code}"
-        except requests.RequestException as exc:
-            ok = False
-            detail = f"HA URL check failed: {exc}"
-        checks.append(_check("HA URL", ok, detail))
-    else:
-        checks.append(_check("HA URL", True, "Skipped: Home Assistant URL/token not configured."))
+    checks.append(_ha_url_check(config))
 
     return DoctorReport(checks=checks)

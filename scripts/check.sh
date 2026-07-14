@@ -16,8 +16,9 @@ for script in scripts/*.sh; do
   bash -n "${script}"
 done
 bash -n scripts/hyrovi-panel
+python3 -m py_compile scripts/hyrovi-touch-config-save
 
-python3 - <<'PY'
+PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 from pathlib import Path
 
 requirements = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
@@ -29,7 +30,9 @@ if missing:
 print("Requirements file check passed.")
 PY
 
-"${VENV_PYTHON}" -m py_compile app.py admin/server.py $(find app -name '*.py' -type f | sort)
+PYTHONDONTWRITEBYTECODE=1 "${VENV_PYTHON}" -m py_compile app.py admin/server.py $(find app -name '*.py' -type f | sort)
+
+PYTHONDONTWRITEBYTECODE=1 "${VENV_PYTHON}" -m unittest discover -s tests -v
 
 for service in systemd/*.service; do
   systemd-analyze verify "${service}" >/dev/null 2>&1 || true
@@ -38,4 +41,4 @@ done
 grep -q "sudo ./scripts/setup_device.sh" README.md
 grep -q "hyrovi-panel status" README.md
 
-echo "Syntax and import checks passed."
+echo "Syntax, import, and test checks passed."
