@@ -160,18 +160,23 @@ def _restart_services() -> None:
 
 def _admin_healthcheck(timeout: float = 4.0) -> tuple[bool, str]:
     last_error = "Admin healthcheck unavailable."
-    for _ in range(10):
+    attempts = 30
+    sleep_seconds = 1.5
+    for _ in range(attempts):
         try:
             response = requests.get("http://127.0.0.1:8765/health", timeout=timeout)
             response.raise_for_status()
             payload = response.json()
             if isinstance(payload, dict):
-                return bool(payload.get("ok", False)), str(payload.get("status", "ok"))
-            return True, "Admin healthcheck returned a non-object payload."
+                if payload.get("ok", False):
+                    return True, str(payload.get("status", "ok"))
+                last_error = str(payload.get("status", "Admin healthcheck reported not ready."))
+            else:
+                last_error = "Admin healthcheck returned a non-object payload."
         except requests.HTTPError as exc:
             response = exc.response
             status = response.status_code if response is not None else None
-            return False, f"Admin healthcheck failed with HTTP {status if status is not None else 'error'}."
+            last_error = f"Admin healthcheck failed with HTTP {status if status is not None else 'error'}."
         except requests.Timeout:
             last_error = "Admin healthcheck timed out."
         except requests.ConnectionError as exc:
@@ -179,8 +184,8 @@ def _admin_healthcheck(timeout: float = 4.0) -> tuple[bool, str]:
         except requests.RequestException as exc:
             last_error = f"Admin healthcheck failed: {exc}"
         except ValueError as exc:
-            return False, f"Admin healthcheck returned invalid JSON: {exc}"
-        time.sleep(1.5)
+            last_error = f"Admin healthcheck returned invalid JSON: {exc}"
+        time.sleep(sleep_seconds)
     return False, last_error
 
 
