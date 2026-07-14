@@ -132,6 +132,11 @@ class HomeAssistantClient:
             )
         return self._request("POST", f"services/{domain}/{service}", json=data)
 
+    @staticmethod
+    def _entity_domain(entity_id: str) -> str:
+        domain, _, _object_id = entity_id.partition(".")
+        return domain.strip().lower()
+
     def toggle_light(self, entity_id: str) -> HomeAssistantResult:
         if not self.enabled:
             current = self.get_state(entity_id)
@@ -150,6 +155,14 @@ class HomeAssistantClient:
             return current
 
         state = str((current.data or {}).get("state", "")).lower()
+        domain = self._entity_domain(entity_id)
+        if domain not in {"light", "switch"}:
+            return HomeAssistantResult(
+                ok=False,
+                source="config",
+                detail=f"Cannot toggle {entity_id}: unsupported domain '{domain or 'unknown'}'.",
+                data=current.data,
+            )
         if state == "on":
             service = "turn_off"
         elif state == "off":
@@ -164,7 +177,7 @@ class HomeAssistantClient:
                 data=current.data,
             )
 
-        service_result = self.call_service("light", service, {"entity_id": entity_id})
+        service_result = self.call_service(domain, service, {"entity_id": entity_id})
         if not service_result.ok:
             return service_result
         refreshed = self.get_state(entity_id)

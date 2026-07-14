@@ -83,6 +83,19 @@ class HomeAssistantClientTests(unittest.TestCase):
         self.assertEqual(mock_request.call_count, 3)
 
     @patch("app.ha.client.requests.request")
+    def test_toggle_switch_uses_switch_domain(self, mock_request) -> None:
+        mock_request.side_effect = [
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(200, {"result": "ok"}),
+            self._response(200, {"entity_id": "switch.test", "state": "on", "attributes": {}}),
+        ]
+        client = HomeAssistantClient("http://homeassistant.local:8123", "token")
+        result = client.toggle_light("switch.test")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["state"], "on")
+        self.assertEqual(mock_request.call_args_list[1].args[1], "http://homeassistant.local:8123/api/services/switch/turn_on")
+
+    @patch("app.ha.client.requests.request")
     def test_service_error_keeps_result_failed(self, mock_request) -> None:
         mock_request.side_effect = [
             self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
