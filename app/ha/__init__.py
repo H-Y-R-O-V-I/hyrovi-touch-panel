@@ -1,2 +1,1 @@
-"""Home Assistant integration placeholders."""
-
+"""Home Assistant integration."""

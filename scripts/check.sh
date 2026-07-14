@@ -2,29 +2,40 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV_PYTHON="${ROOT_DIR}/.venv/bin/python"
+if [ -x "/opt/hyrovi-touch-panel/venv/bin/python" ]; then
+  VENV_PYTHON="/opt/hyrovi-touch-panel/venv/bin/python"
+elif [ -x "${ROOT_DIR}/.venv/bin/python" ]; then
+  VENV_PYTHON="${ROOT_DIR}/.venv/bin/python"
+else
+  VENV_PYTHON="$(command -v python3)"
+fi
 
 cd "${ROOT_DIR}"
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is not available."
-  exit 1
-fi
+for script in scripts/*.sh; do
+  bash -n "${script}"
+done
+bash -n scripts/hyrovi-panel
 
-if [ ! -x "${VENV_PYTHON}" ]; then
-  echo "Virtual environment is missing at ${ROOT_DIR}/.venv."
-  exit 1
-fi
+python3 - <<'PY'
+from pathlib import Path
 
-"${VENV_PYTHON}" - <<'PY'
-import importlib
-
-for module_name in ("pygame", "yaml"):
-    importlib.import_module(module_name)
-print("Requirements import check passed.")
+requirements = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+expected = {"Flask", "PyYAML", "pygame", "requests"}
+found = {line.split("==")[0].split(">=")[0].split("<")[0] for line in requirements if line and not line.startswith("#")}
+missing = sorted(expected - found)
+if missing:
+    raise SystemExit(f"Missing requirements: {', '.join(missing)}")
+print("Requirements file check passed.")
 PY
 
-"${VENV_PYTHON}" -m py_compile app.py $(find app -name '*.py' -type f | sort)
+"${VENV_PYTHON}" -m py_compile app.py admin/server.py $(find app -name '*.py' -type f | sort)
+
+for service in systemd/*.service; do
+  systemd-analyze verify "${service}" >/dev/null 2>&1 || true
+done
+
+grep -q "sudo ./scripts/setup_device.sh" README.md
+grep -q "hyrovi-panel status" README.md
 
 echo "Syntax and import checks passed."
-

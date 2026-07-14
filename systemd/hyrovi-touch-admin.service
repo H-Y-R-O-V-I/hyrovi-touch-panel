@@ -1,5 +1,5 @@
 [Unit]
-Description=Hyrovi Touch Panel
+Description=Hyrovi Touch Panel Admin
 After=network-online.target
 Wants=network-online.target
 
@@ -9,9 +9,7 @@ User=hyrovi-panel
 Group=hyrovi-panel
 WorkingDirectory=/opt/hyrovi-touch-panel/current
 Environment=PYTHONUNBUFFERED=1
-Environment=SDL_VIDEO_CENTERED=1
-Environment=SDL_AUDIODRIVER=dummy
-ExecStart=/opt/hyrovi-touch-panel/venv/bin/python /opt/hyrovi-touch-panel/current/app.py --config /etc/hyrovi-touch-panel/config.yaml
+ExecStart=/opt/hyrovi-touch-panel/venv/bin/python /opt/hyrovi-touch-panel/current/admin/server.py
 Restart=always
 RestartSec=3
 

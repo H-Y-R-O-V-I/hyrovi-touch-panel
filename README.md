@@ -1,63 +1,61 @@
 # Hyrovi Touch Panel
 
-Lokale, leichte Touch-UI für einen Raspberry Pi mit 5-Zoll-HDMI-/USB-Touchscreen.
+Lokale Touch-UI für Raspberry Pi OS Lite auf einem festen HDMI-/USB-Touchscreen.
 
-## Projektziel
+Ziel:
 
-- Eigenes lokales Touch-Panel statt Home-Assistant-Webdashboard
-- Sehr schlanke Oberfläche auf Basis von Python und `pygame`
-- Spaterer Betrieb auf Raspberry Pi Zero oder Zero 2 W
-- Home Assistant wird nur uber die API angesprochen, nicht uber Chromium oder ein Web-Frontend
+- kein Chromium
+- kein Desktop
+- kein Home-Assistant-Webdashboard
+- Python/Pygame als leichte lokale Bedienoberfläche
+- Home Assistant später nur über die API
 
-## Warum kein HA-Webdashboard
+## Schnellstart auf dem Zielgerät
 
-- Kein Browser-Stack als Dauerlast
-- Schnellere Startzeit und weniger RAM-Verbrauch
-- Weniger Abhangigkeiten auf dem Zielsystem
-- Bessere Kontrolle uber das Layout fur einen festen Touchscreen
+```bash
+git clone https://github.com/H-Y-R-O-V-I/hyrovi-touch-panel.git
+cd hyrovi-touch-panel
+sudo ./scripts/setup_device.sh
+```
 
-## Zielplattform
+Danach:
 
-- Entwicklung aktuell auf dem Raspberry Pi 5
-- Ziel spater: Raspberry Pi Zero oder Zero 2 W
-- 800x480 als Basislayout
-- Skalierbar und fullscreen-fahig
+```bash
+hyrovi-panel status
+hyrovi-panel logs
+hyrovi-panel update
+hyrovi-panel rollback
+```
 
 ## Projektstruktur
 
 - `app/` Anwendungslogik
-- `app/ui/` Mock-UI und Rendering
-- `app/ha/` Home-Assistant-Platzhalter
-- `app/config/` Config-Loader
-- `assets/` Spatere Icons/Bilder
-- `scripts/` Install-, Start- und Check-Skripte
-- `systemd/` vorbereitete Service-Datei
-- `docs/` Platz fur weitere Doku
+- `app/ui/` Pygame-UI und Diagnoseansichten
+- `app/ha/` Home-Assistant-Client
+- `app/config/` Config-Lader
+- `admin/` Platz für lokale Admin-Artefakte
+- `scripts/` Setup-, Diagnose- und CLI-Wrapper
+- `systemd/` Service-Definitionen
+- `docs/` Installations-, Update- und Recovery-Dokumente
+- `assets/` Platz für Icons und Bilder
 
-## Installation auf Raspberry Pi OS Lite
+## Betrieb
 
-1. Projekt nach `/home/carsten/programmieren/hyrovi-touch-panel` kopieren
-2. Im Projektordner das Dev-Setup anlegen:
+- Die produktive Config liegt außerhalb des Repos unter `/etc/hyrovi-touch-panel/config.yaml`
+- Die Release-Dateien liegen unter `/opt/hyrovi-touch-panel/releases/`
+- Die aktive Version ist `/opt/hyrovi-touch-panel/current`
+- Die frühere Version ist `/opt/hyrovi-touch-panel/previous`
+- Die venv liegt unter `/opt/hyrovi-touch-panel/venv`
 
-```bash
-./scripts/install_dev.sh
-```
+## Dienste
 
-3. Konfiguration anlegen:
+- `hyrovi-touch-panel.service` startet die Pygame-UI
+- `hyrovi-touch-admin.service` startet die lokale Admin-Webseite auf Port `8765`
+- `hyrovi-touch-update-on-boot.service` prüft nach dem Booten auf Updates
 
-```bash
-cp config.example.yaml config.yaml
-```
+Die Admin-Webseite ist dann unter `http://<pi-ip>:8765` erreichbar.
 
-4. Mock-App starten:
-
-```bash
-./scripts/run.sh
-```
-
-Hinweis: Auf Pi Zero und Pi Zero 2 W kann fullscreen in `config.yaml` auf `true` gesetzt werden.
-
-## Dev-Start auf dem Pi 5
+## Entwicklung
 
 ```bash
 ./scripts/install_dev.sh
@@ -65,43 +63,8 @@ Hinweis: Auf Pi Zero und Pi Zero 2 W kann fullscreen in `config.yaml` auf `true`
 ./scripts/run.sh
 ```
 
-Die App lauft im Moment nur als lokale Mock-Oberflache. Es werden noch keine echten Home-Assistant-Services aufgerufen.
+## Hinweise
 
-## Home Assistant Token Hinweise
-
-- Kein Token in Git einchecken
-- Das echte Token spater nur in `config.yaml` oder uber ein sicheres Secret-Handling ablegen
-- `config.example.yaml` bleibt bewusst ohne Geheimnisse
-
-## systemd Autostart
-
-Die Datei `systemd/hyrovi-touch-panel.service` ist vorbereitet, aber nicht aktiviert.
-
-Spatere Installation auf dem Zielsystem:
-
-```bash
-sudo cp systemd/hyrovi-touch-panel.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable hyrovi-touch-panel.service
-sudo systemctl start hyrovi-touch-panel.service
-```
-
-Der Service startet dann `app.py` aus der venv.
-
-## GitHub Push spaeter
-
-Das Repository ist lokal initialisiert und kann spater nach `H-Y-R-O-V-I/hyrovi-touch-panel` gepusht werden:
-
-```bash
-git remote add origin git@github.com:H-Y-R-O-V-I/hyrovi-touch-panel.git
-git branch -M main
-git push -u origin main
-```
-
-## Naechste Schritte
-
-- Echte Home-Assistant-API Anbindung
-- Icons und Feinschliff fur die Touch-Navigation
-- Mehrere Lichtszenen oder Raumseiten
-- Autostart auf dem Ziel-Pi validieren
-
+- Keine Secrets ins Repo einchecken.
+- `config.example.yaml` ist nur eine Vorlage.
+- Update und Rollback laufen über Release-Ordner, nicht über ein blindes `git pull`.

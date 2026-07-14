@@ -1,3 +1,20 @@
+# Config
+
+Die produktive Konfiguration liegt unter:
+
+```text
+/etc/hyrovi-touch-panel/config.yaml
+```
+
+Die Vorlage liegt im Repo als:
+
+```text
+config.example.yaml
+```
+
+## Beispiel
+
+```yaml
 home_assistant:
   url: "http://homeassistant.local:8123"
   token: ""
@@ -26,6 +43,10 @@ entities:
   main_light: "light.extended_color_light_3"
   temperature: "sensor.wohnzimmer_temperatur"
   humidity: "sensor.wohnzimmer_luftfeuchtigkeit"
+```
 
-admin:
-  pin: ""
+## Hinweise
+
+- Keine Secrets ins Repo.
+- Token nur lokal in `/etc/hyrovi-touch-panel/config.yaml`.
+- Wenn Home Assistant noch nicht konfiguriert ist, läuft die App im Mock-Modus.

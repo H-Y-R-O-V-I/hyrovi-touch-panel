@@ -1,0 +1,16 @@
+[Unit]
+Description=Hyrovi Touch Panel Update On Boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hyrovi-panel
+Group=hyrovi-panel
+WorkingDirectory=/opt/hyrovi-touch-panel/current
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/sleep 60
+ExecStart=/usr/local/bin/hyrovi-panel update --on-boot
+
+[Install]
+WantedBy=multi-user.target
