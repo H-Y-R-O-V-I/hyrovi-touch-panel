@@ -130,6 +130,16 @@ class DashboardTouchTests(unittest.TestCase):
         self.assertEqual(len(state.fill), 3)
         self.assertEqual(len(state.border), 3)
 
+    def test_on_state_without_tile_metadata_does_not_crash(self) -> None:
+        app = DashboardApp(self._config())
+        state = app._tile_state_for_entity(
+            "switch.lampe_wohnzimmer",
+            {"entity_id": "switch.lampe_wohnzimmer", "state": "on", "attributes": {}},
+        )
+        self.assertEqual(state.state, "Ein")
+        self.assertIsInstance(state.fill, tuple)
+        self.assertEqual(len(state.fill), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -593,8 +593,10 @@ class DashboardApp:
             return lambda tile=tile: self._turn_on_scene(tile.entity_id)
         return None
 
-    def _tile_palette(self, tile: DashboardTileConfig, state: TileState) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
-        domain = state.domain or (tile.entity_id.split(".", 1)[0] if "." in tile.entity_id else tile.type)
+    def _tile_palette(self, tile: DashboardTileConfig | None, state: TileState) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
+        tile_type = tile.type if tile is not None else ""
+        tile_entity_id = tile.entity_id if tile is not None else ""
+        domain = state.domain or (tile_entity_id.split(".", 1)[0] if "." in tile_entity_id else tile_type)
         lowered = state.state.lower()
         if state.busy:
             return THEME.busy_fill, THEME.accent_bright, THEME.text, THEME.text_muted
@@ -609,11 +611,11 @@ class DashboardApp:
                 return THEME.switch_on_fill, THEME.switch_on_fill, THEME.text, THEME.text
             if domain == "input_boolean":
                 return THEME.boolean_on_fill, THEME.boolean_on_fill, THEME.text_dark, THEME.text_dark
-            if domain in {"script", "automation", "scene"} or tile.type in {"script", "automation", "scene", "action"}:
+            if domain in {"script", "automation", "scene"} or tile_type in {"script", "automation", "scene", "action"}:
                 return THEME.action_fill, THEME.action_fill, THEME.text, THEME.text_muted
-        if tile.type in {"sensor", "binary_sensor"} or domain in {"sensor", "binary_sensor"}:
+        if tile_type in {"sensor", "binary_sensor"} or domain in {"sensor", "binary_sensor"}:
             return THEME.sensor_fill, THEME.sensor_border, THEME.text, THEME.text_muted
-        if tile.type in {"script", "automation", "scene"} or domain in {"script", "automation", "scene"}:
+        if tile_type in {"script", "automation", "scene"} or domain in {"script", "automation", "scene"}:
             return THEME.action_fill, THEME.sensor_border, THEME.text, THEME.text_muted
         return THEME.off_fill, THEME.header_border, THEME.text, THEME.text_muted
 
