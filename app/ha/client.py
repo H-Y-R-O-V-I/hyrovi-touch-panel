@@ -42,6 +42,21 @@ class HomeAssistantClient:
             return f"{base}/api/{suffix.lstrip('/')}"
         return f"{base}/api/" if trailing_slash else f"{base}/api"
 
+    def api_root_url(self) -> str:
+        return self._api_url(trailing_slash=True)
+
+    def states_url(self) -> str:
+        return self._api_url("states")
+
+    def state_url(self, entity_id: str) -> str:
+        return self._api_url(f"states/{entity_id}")
+
+    def service_url(self, domain: str, service: str) -> str:
+        return self._api_url(f"services/{domain}/{service}")
+
+    def websocket_url(self) -> str:
+        return f"{self._base_url()}/api/websocket"
+
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.token:
@@ -139,6 +154,24 @@ class HomeAssistantClient:
         domain, _, _object_id = entity_id.partition(".")
         return domain.strip().lower()
 
+    def entity_domain(self, entity_id: str) -> str:
+        return self._entity_domain(entity_id)
+
+    def turn_on(self, entity_id: str) -> HomeAssistantResult:
+        return self.call_service(self.entity_domain(entity_id), "turn_on", {"entity_id": entity_id})
+
+    def turn_off(self, entity_id: str) -> HomeAssistantResult:
+        return self.call_service(self.entity_domain(entity_id), "turn_off", {"entity_id": entity_id})
+
+    def trigger(self, entity_id: str, *, skip_condition: bool = True) -> HomeAssistantResult:
+        payload: dict[str, Any] = {"entity_id": entity_id}
+        if skip_condition:
+            payload["skip_condition"] = True
+        return self.call_service("automation", "trigger", payload)
+
+    def turn_on_scene(self, entity_id: str) -> HomeAssistantResult:
+        return self.call_service("scene", "turn_on", {"entity_id": entity_id})
+
     def _refresh_state_until(self, entity_id: str, expected_state: str, *, attempts: int = 5, delay: float = 0.25) -> HomeAssistantResult:
         latest = self.get_state(entity_id)
         if latest.ok and str((latest.data or {}).get("state", "")).lower() == expected_state:
@@ -206,4 +239,34 @@ class HomeAssistantClient:
             detail=f"Entity {entity_id} did not reach {expected_state} after {domain}.{service}.",
             data=refreshed.data if refreshed.ok else current.data,
             status_code=refreshed.status_code if refreshed.status_code is not None else service_result.status_code,
+        )
+
+    def toggle_entity(self, entity_id: str) -> HomeAssistantResult:
+        domain = self.entity_domain(entity_id)
+        if domain in {"light", "switch", "input_boolean"}:
+            current = self.get_state(entity_id)
+            if not current.ok:
+                return current
+            state = str((current.data or {}).get("state", "")).lower()
+            if state == "on":
+                return self.turn_off(entity_id)
+            if state == "off":
+                return self.turn_on(entity_id)
+            if state in {"unknown", "unavailable", ""}:
+                return HomeAssistantResult(
+                    ok=False,
+                    source="ha",
+                    detail=f"Cannot toggle {entity_id}: current state is {state or 'unknown'}.",
+                    data=current.data,
+                )
+            return HomeAssistantResult(
+                ok=False,
+                source="ha",
+                detail=f"Cannot toggle {entity_id}: current state is {state or 'unknown'}.",
+                data=current.data,
+            )
+        return HomeAssistantResult(
+            ok=False,
+            source="config",
+            detail=f"Cannot toggle {entity_id}: unsupported domain '{domain or 'unknown'}'.",
         )

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+import requests
+
 from app.config.loader import AppConfig, load_config
 from app.doctor import DoctorReport, run_doctor
 from app.runtime import (
@@ -155,6 +157,28 @@ def _restart_services() -> None:
             raise UpdateError(proc.stderr.strip() or proc.stdout.strip() or f"Failed to restart {service}")
 
 
+def _admin_healthcheck(timeout: float = 4.0) -> tuple[bool, str]:
+    try:
+        response = requests.get("http://127.0.0.1:8765/health", timeout=timeout)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, dict):
+            return bool(payload.get("ok", False)), str(payload.get("status", "ok"))
+        return True, "Admin healthcheck returned a non-object payload."
+    except requests.HTTPError as exc:
+        response = exc.response
+        status = response.status_code if response is not None else None
+        return False, f"Admin healthcheck failed with HTTP {status if status is not None else 'error'}."
+    except requests.Timeout:
+        return False, "Admin healthcheck timed out."
+    except requests.ConnectionError as exc:
+        return False, f"Admin healthcheck connection error: {exc}"
+    except requests.RequestException as exc:
+        return False, f"Admin healthcheck failed: {exc}"
+    except ValueError as exc:
+        return False, f"Admin healthcheck returned invalid JSON: {exc}"
+
+
 def _rollback_link(previous_release: Path) -> None:
     if not previous_release.exists():
         raise UpdateError(f"Rollback target missing: {previous_release}")
@@ -195,15 +219,25 @@ def update_release(config: AppConfig | None = None, config_path: Path = CONFIG_F
     _restart_services()
 
     report = run_doctor(config_path)
-    if not report.ok and config.updates.rollback_on_failed_healthcheck:
+    admin_ok, admin_detail = _admin_healthcheck()
+    admin_report = DoctorReport(checks=list(report.checks))
+    if report.ok and admin_ok:
+        version = read_release_metadata(release_dir).version if read_release_metadata(release_dir) else ref
+        message = "Update completed." if not on_boot else "Boot update completed."
+        return UpdateOutcome(ok=True, message=message, version=version, release_dir=release_dir, doctor=admin_report)
+
+    if config.updates.rollback_on_failed_healthcheck:
         if current is not None:
             _safe_symlink(CURRENT_LINK, current)
             _restart_services()
-        raise UpdateError("Healthcheck failed after update; rollback executed.")
+        reason = report.format_text()
+        if not admin_ok:
+            reason = f"{reason}\n{admin_detail}"
+        raise UpdateError(f"Healthcheck failed after update; rollback executed.\n{reason}")
 
     version = read_release_metadata(release_dir).version if read_release_metadata(release_dir) else ref
     message = "Update completed." if not on_boot else "Boot update completed."
-    return UpdateOutcome(ok=True, message=message, version=version, release_dir=release_dir, doctor=report)
+    return UpdateOutcome(ok=False, message=f"Update completed but checks failed: {admin_detail}", version=version, release_dir=release_dir, doctor=admin_report)
 
 
 def list_installed_releases() -> list[dict[str, str]]:

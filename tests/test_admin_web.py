@@ -69,6 +69,35 @@ class AdminWebTests(unittest.TestCase):
         self.assertEqual(merged["home_assistant"]["token"], "keep-me")
         self.assertEqual(merged["entities"]["main_light"], "light.new")
 
+    @patch("app.admin.web.run_doctor")
+    def test_health_endpoint_returns_json_without_token(self, mock_run_doctor) -> None:
+        mock_report = mock_run_doctor.return_value
+        mock_report.ok = True
+        mock_report.to_dict.return_value = {"checks": []}
+        config_path = self._config_file()
+        app = create_app(config_path)
+        client = app.test_client()
+
+        response = client.get("/health")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"ok": true', body)
+        self.assertNotIn("super-secret-token", body)
+
+    @patch("app.admin.web.HomeAssistantClient.list_states", return_value=HomeAssistantResult(ok=True, source="ha", detail="ok", data=[]))
+    def test_dashboard_page_does_not_expose_token(self, _list_states) -> None:
+        config_path = self._config_file()
+        app = create_app(config_path)
+        client = app.test_client()
+
+        response = client.get("/dashboard")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("super-secret-token", body)
+        self.assertIn("Dashboard YAML", body)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,9 +23,67 @@ updates:
   rollback_on_failed_healthcheck: true
 
 entities:
-  main_light: "light.ikea_of_sweden_ormanas_led_strip"
+  main_light: "switch.lampe_wohnzimmer"
   temperature: "sensor.tesla_wall_connector_mcu_temperatur"
   humidity: "sensor.solaredge_speicherniveau"
+
+dashboard:
+  pages:
+    - id: "home"
+      label: "Home"
+      tiles:
+        - id: "main_light"
+          type: "entity"
+          entity_id: "switch.lampe_wohnzimmer"
+          label: "Lampe Wohnzimmer"
+          action: "toggle"
+          info: "Hauptlicht"
+        - id: "temperature"
+          type: "sensor"
+          entity_id: "sensor.tesla_wall_connector_mcu_temperatur"
+          label: "Temperatur"
+          action: "none"
+          info: "Realer Wert"
+        - id: "humidity"
+          type: "sensor"
+          entity_id: "sensor.solaredge_speicherniveau"
+          label: "Luftfeuchtigkeit"
+          action: "none"
+          info: "Realer Wert"
+    - id: "lights"
+      label: "Lampen"
+      tiles:
+        - id: "main_light"
+          type: "entity"
+          entity_id: "switch.lampe_wohnzimmer"
+          label: "Lampe Wohnzimmer"
+          action: "toggle"
+          info: "Direkter Zugriff"
+    - id: "switches"
+      label: "Schalter"
+      tiles:
+        - id: "main_light_switch"
+          type: "entity"
+          entity_id: "switch.lampe_wohnzimmer"
+          label: "Schalter Wohnzimmer"
+          action: "toggle"
+          info: "Hauptlicht"
+    - id: "actions"
+      label: "Aktionen"
+      tiles:
+        - id: "refresh"
+          type: "action"
+          label: "Neu laden"
+          action: "refresh"
+          info: "Nur lesen"
+    - id: "system"
+      label: "System"
+      tiles:
+        - id: "ha_state"
+          type: "info"
+          label: "Home Assistant"
+          action: "none"
+          info: "Verbindungsstatus"
 
 admin:
   pin: ""

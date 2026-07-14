@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import yaml
 from flask import Flask, Response, redirect, render_template_string, request, url_for
 
 from app.config.loader import (
@@ -31,19 +32,17 @@ def _systemctl_status(service: str) -> str:
 
 
 def _tail_logs(service: str, lines: int = 120) -> str:
-    proc = subprocess.run([
-        "journalctl",
-        "-u",
-        service,
-        "-n",
-        str(lines),
-        "--no-pager",
-    ], text=True, capture_output=True, check=False)
+    proc = subprocess.run(
+        ["journalctl", "-u", service, "-n", str(lines), "--no-pager"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
     return proc.stdout.strip() or proc.stderr.strip() or "No logs available."
 
 
-def _service_action(action: str, service: str) -> None:
-    subprocess.run(["sudo", "-n", "/usr/bin/systemctl", action, service], check=False)
+def _restart_panel_service() -> None:
+    subprocess.run(["sudo", "-n", "/usr/bin/systemctl", "restart", "hyrovi-touch-panel.service"], check=False)
 
 
 def _basic_auth_required(config: AppConfig) -> bool:
@@ -122,13 +121,55 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
             "temperature": config.entities.temperature,
             "humidity": config.entities.humidity,
         },
-        "ui": {
-            "fullscreen": config.ui.fullscreen,
-            "screen_width": config.ui.screen_width,
-            "screen_height": config.ui.screen_height,
-            "refresh_interval": config.ui.refresh_interval,
+        "dashboard": {
+            "pages": [
+                {
+                    "id": page.id,
+                    "label": page.label,
+                    "tiles": [
+                        {
+                            "id": tile.id,
+                            "type": tile.type,
+                            "entity_id": tile.entity_id,
+                            "label": tile.label,
+                            "action": tile.action,
+                            "icon": tile.icon,
+                            "info": tile.info,
+                            "order": tile.order,
+                        }
+                        for tile in page.tiles
+                    ],
+                }
+                for page in config.dashboard.pages
+            ],
         },
     }
+
+
+def _dashboard_yaml(config: AppConfig) -> str:
+    return yaml.safe_dump({"dashboard": _config_payload(config)["dashboard"]}, sort_keys=False, allow_unicode=True)
+
+
+def _dashboard_pages_summary(config: AppConfig) -> list[dict[str, Any]]:
+    pages: list[dict[str, Any]] = []
+    for page in config.dashboard.pages:
+        pages.append(
+            {
+                "id": page.id,
+                "label": page.label,
+                "tiles": [
+                    {
+                        "id": tile.id,
+                        "type": tile.type,
+                        "entity_id": tile.entity_id,
+                        "label": tile.label,
+                        "action": tile.action,
+                    }
+                    for tile in page.tiles
+                ],
+            }
+        )
+    return pages
 
 
 def _save_config_data(data: dict[str, Any]) -> tuple[bool, str]:
@@ -146,7 +187,12 @@ def _save_config_data(data: dict[str, Any]) -> tuple[bool, str]:
     return True, "Configuration saved atomically."
 
 
-def _merge_home_assistant_config(current: dict[str, Any], form: dict[str, str], *, delete_token: bool = False) -> tuple[bool, str, dict[str, Any]]:
+def _merge_home_assistant_config(
+    current: dict[str, Any],
+    form: dict[str, str],
+    *,
+    delete_token: bool = False,
+) -> tuple[bool, str, dict[str, Any]]:
     merged = dict(current)
     home_assistant = merged.get("home_assistant", {})
     if not isinstance(home_assistant, dict):
@@ -183,6 +229,27 @@ def _merge_home_assistant_config(current: dict[str, Any], form: dict[str, str], 
             entities[key] = value
     merged["entities"] = entities
     return True, "Configuration updated.", merged
+
+
+def _merge_dashboard_config(current: dict[str, Any], form: dict[str, str]) -> tuple[bool, str, dict[str, Any]]:
+    merged = dict(current)
+    raw = form.get("dashboard_yaml", "").strip()
+    if not raw:
+        return False, "Dashboard configuration must not be empty.", merged
+    try:
+        parsed = yaml.safe_load(raw) or {}
+    except yaml.YAMLError as exc:
+        return False, f"Invalid dashboard YAML: {exc}", merged
+    if not isinstance(parsed, dict):
+        return False, "Dashboard configuration must be a mapping.", merged
+    dashboard = parsed.get("dashboard", parsed)
+    if not isinstance(dashboard, dict):
+        return False, "Dashboard section must be a mapping.", merged
+    pages = dashboard.get("pages", [])
+    if not isinstance(pages, list):
+        return False, "Dashboard pages must be a list.", merged
+    merged["dashboard"] = dashboard
+    return True, "Dashboard updated.", merged
 
 
 def _render_index(config: AppConfig, message: str = "") -> str:
@@ -223,7 +290,7 @@ def _render_index(config: AppConfig, message: str = "") -> str:
     <body>
     <div class="wrap">
       <h1>Hyrovi Touch Admin</h1>
-      <p class="muted">Lokale Recovery- und Diagnoseoberfläche auf Port 8765.</p>
+      <p class="muted">Lokale Recovery-, Konfigurations- und Diagnoseoberfläche auf Port 8765.</p>
       {% if message %}<div class="card" style="border-color: #43627e; margin-bottom:16px;">{{ message }}</div>{% endif %}
       <div class="grid">
         <div class="card">
@@ -242,7 +309,7 @@ def _render_index(config: AppConfig, message: str = "") -> str:
           <h2>Aktionen</h2>
           <a class="btn primary" href="{{ url_for('update_now') }}">Update jetzt</a>
           <a class="btn" href="{{ url_for('rollback_now') }}">Rollback</a>
-          <a class="btn" href="{{ url_for('restart_services') }}">Services neu starten</a>
+          <a class="btn" href="{{ url_for('restart_panel') }}">Panel neu starten</a>
           <a class="btn" href="{{ url_for('healthcheck') }}">Healthcheck</a>
         </div>
         <div class="card">
@@ -250,15 +317,7 @@ def _render_index(config: AppConfig, message: str = "") -> str:
           <p class="muted">URL: {{ config.home_assistant.url }}</p>
           <p class="muted">Token vorhanden: {{ 'Ja' if config.home_assistant.token.strip() else 'Nein' }}</p>
           <a class="btn primary" href="{{ url_for('home_assistant_page') }}">Öffnen</a>
-        </div>
-        <div class="card">
-          <h2>Service Steuerung</h2>
-          <a class="btn" href="{{ url_for('service_action', action='start', service='hyrovi-touch-panel.service') }}">Panel Start</a>
-          <a class="btn" href="{{ url_for('service_action', action='stop', service='hyrovi-touch-panel.service') }}">Panel Stop</a>
-          <a class="btn" href="{{ url_for('service_action', action='restart', service='hyrovi-touch-panel.service') }}">Panel Restart</a>
-          <a class="btn" href="{{ url_for('service_action', action='start', service='hyrovi-touch-admin.service') }}">Admin Start</a>
-          <a class="btn" href="{{ url_for('service_action', action='stop', service='hyrovi-touch-admin.service') }}">Admin Stop</a>
-          <a class="btn" href="{{ url_for('service_action', action='restart', service='hyrovi-touch-admin.service') }}">Admin Restart</a>
+          <a class="btn" href="{{ url_for('dashboard_page') }}">Dashboard</a>
         </div>
       </div>
       <div class="grid" style="margin-top:16px;">
@@ -325,7 +384,8 @@ def _render_home_assistant(config: AppConfig, message: str = "", error: str = ""
         .bad { color: var(--bad); }
         .btn { display:inline-block; margin:4px 6px 0 0; padding:12px 16px; border-radius:14px; background: var(--panel2); color: var(--text); text-decoration:none; border:1px solid #324354; }
         .btn.primary { background: linear-gradient(135deg, #2e7dff, #64b5ff); color:#06111f; font-weight:700; }
-        input, select { width:100%; box-sizing:border-box; background:#0d1116; color:var(--text); border:1px solid #324354; border-radius:12px; padding:10px 12px; margin:4px 0 12px; }
+        input, textarea { width:100%; box-sizing:border-box; background:#0d1116; color:var(--text); border:1px solid #324354; border-radius:12px; padding:10px 12px; margin:4px 0 12px; }
+        textarea { min-height: 240px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
         label { display:block; margin-top:10px; font-weight:600; }
         table { width:100%; border-collapse: collapse; }
         th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #273340; vertical-align:top; }
@@ -416,6 +476,121 @@ def _render_home_assistant(config: AppConfig, message: str = "", error: str = ""
     )
 
 
+def _render_dashboard(config: AppConfig, message: str = "", error: str = "") -> str:
+    client = _ha_client(config)
+    entity_rows = _entity_rows(client)
+    template = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>Dashboard - Hyrovi Touch Admin</title>
+      <style>
+        :root { color-scheme: dark; --bg:#0f1318; --panel:#18212b; --panel2:#202b36; --text:#eef3f7; --muted:#9fb0bf; --ok:#4dd48a; --bad:#ff7b7b; }
+        body { margin:0; font-family: system-ui, sans-serif; background: radial-gradient(circle at top, #18212b, #0f1318 60%); color: var(--text); }
+        .wrap { max-width: 1280px; margin: 0 auto; padding: 24px; }
+        .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+        .card { background: rgba(24,33,43,.94); border:1px solid #273340; border-radius:18px; padding:18px; box-shadow:0 20px 50px rgba(0,0,0,.25); }
+        h1,h2 { margin:0 0 12px 0; }
+        .muted { color: var(--muted); }
+        .btn { display:inline-block; margin:4px 6px 0 0; padding:12px 16px; border-radius:14px; background: var(--panel2); color: var(--text); text-decoration:none; border:1px solid #324354; }
+        .btn.primary { background: linear-gradient(135deg, #2e7dff, #64b5ff); color:#06111f; font-weight:700; }
+        textarea, input { width:100%; box-sizing:border-box; background:#0d1116; color:var(--text); border:1px solid #324354; border-radius:12px; padding:10px 12px; margin:4px 0 12px; }
+        textarea { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+        label { display:block; margin-top:10px; font-weight:600; }
+        table { width:100%; border-collapse: collapse; }
+        th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #273340; vertical-align:top; }
+      </style>
+      <script>
+        function filterEntities() {
+          const query = document.getElementById('entity-filter').value.toLowerCase();
+          document.querySelectorAll('[data-entity-row]').forEach((row) => {
+            row.style.display = row.dataset.search.includes(query) ? '' : 'none';
+          });
+        }
+      </script>
+    </head>
+    <body>
+    <div class="wrap">
+      <h1>Dashboard</h1>
+      <p class="muted">Hier werden Seiten und Karten des Touch-Dashboards verwaltet. Die gespeicherte Struktur wird vom Panel beim nächsten Start oder Refresh gelesen.</p>
+      {% if message %}<div class="card" style="border-color:#43627e; margin-bottom:16px;">{{ message }}</div>{% endif %}
+      {% if error %}<div class="card" style="border-color:#8b4a4a; margin-bottom:16px; color:var(--bad);">{{ error }}</div>{% endif %}
+      <div class="grid">
+        <div class="card">
+          <h2>Bearbeiten</h2>
+          <form method="post" action="{{ url_for('dashboard_save') }}">
+            <label for="dashboard_yaml">Dashboard YAML</label>
+            <textarea id="dashboard_yaml" name="dashboard_yaml">{{ dashboard_yaml }}</textarea>
+            <div>
+              <button class="btn primary" type="submit">Speichern</button>
+              <a class="btn" href="{{ url_for('index') }}">Zurück</a>
+            </div>
+          </form>
+          <p class="muted" style="margin-top:12px;">Ein leerer Wert wird abgelehnt. Token wird hier nie angezeigt.</p>
+        </div>
+        <div class="card">
+          <h2>Seiten</h2>
+          <table>
+            <thead>
+              <tr><th>Page</th><th>Karten</th></tr>
+            </thead>
+            <tbody>
+              {% for page in pages %}
+                <tr>
+                  <td><strong>{{ page.label }}</strong><div class="muted">{{ page.id }}</div></td>
+                  <td>
+                    {% if page.tiles %}
+                      {% for tile in page.tiles %}
+                        <div>{{ tile.label or tile.id }} <span class="muted">({{ tile.type }}{% if tile.entity_id %}, {{ tile.entity_id }}{% endif %})</span></div>
+                      {% endfor %}
+                    {% else %}
+                      <div class="muted">Keine Karten</div>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="grid" style="margin-top:16px;">
+        <div class="card">
+          <h2>Entity-Hilfe</h2>
+          <label for="entity-filter">Suchen</label>
+          <input id="entity-filter" oninput="filterEntities()" placeholder="entity_id, friendly name, domain oder state">
+          <table>
+            <thead>
+              <tr><th>Entity-ID</th><th>Friendly Name</th><th>Domain</th><th>Zustand</th></tr>
+            </thead>
+            <tbody>
+              {% for row in entity_rows %}
+                <tr data-entity-row data-search="{{ (row.entity_id ~ ' ' ~ row.friendly_name ~ ' ' ~ row.domain ~ ' ' ~ row.state)|lower }}">
+                  <td>{{ row.entity_id }}</td>
+                  <td>{{ row.friendly_name }}</td>
+                  <td>{{ row.domain }}</td>
+                  <td>{{ row.state }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+    </body>
+    </html>
+    """
+    return render_template_string(
+        template,
+        dashboard_yaml=_dashboard_yaml(config),
+        pages=_dashboard_pages_summary(config),
+        entity_rows=entity_rows,
+        message=message,
+        error=error,
+    )
+
+
 def create_app(config_path: Path = CONFIG_FILE) -> Flask:
     app = Flask(__name__)
     app.config["HYROVI_CONFIG_PATH"] = config_path
@@ -425,6 +600,8 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
 
     @app.before_request
     def _check_auth() -> Response | None:
+        if request.path == "/health":
+            return None
         if not _auth_ok(current_config()):
             return _auth_challenge()
         return None
@@ -433,8 +610,13 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
     def index() -> str:
         return _render_index(current_config())
 
+    @app.get("/health")
+    def healthcheck() -> Response:
+        report = run_doctor(config_path)
+        return _json_response(report.to_dict() | {"ok": report.ok}, 200 if report.ok else 503)
+
     @app.get("/healthcheck")
-    def healthcheck() -> str:
+    def healthcheck_page() -> str:
         report = run_doctor(config_path)
         return "<pre>" + html.escape(report.format_text()) + "</pre>"
 
@@ -450,17 +632,9 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
     def display_test() -> str:
         return "<pre>Display-Test laeuft ueber das CLI: hyrovi-panel display-test</pre>"
 
-    @app.get("/restart-services")
-    def restart_services() -> Response:
-        _service_action("restart", "hyrovi-touch-panel.service")
-        _service_action("restart", "hyrovi-touch-admin.service")
-        return redirect(url_for("index"))
-
-    @app.get("/service/<action>/<path:service>")
-    def service_action(action: str, service: str) -> Response:
-        if action not in {"start", "stop", "restart"}:
-            return Response("Unsupported action", 400)
-        _service_action(action, service)
+    @app.get("/restart-panel")
+    def restart_panel() -> Response:
+        _restart_panel_service()
         return redirect(url_for("index"))
 
     @app.get("/update-now")
@@ -493,7 +667,7 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
         saved, save_detail = _save_config_data(merged)
         if not saved:
             return _render_home_assistant(config, error=save_detail)
-        _service_action("restart", "hyrovi-touch-panel.service")
+        _restart_panel_service()
         return _render_home_assistant(load_config(config_path), message="Konfiguration gespeichert und Panel-Service neu gestartet.")
 
     @app.post("/home-assistant/delete-token")
@@ -506,7 +680,7 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
         saved, save_detail = _save_config_data(merged)
         if not saved:
             return _render_home_assistant(config, error=save_detail)
-        _service_action("restart", "hyrovi-touch-panel.service")
+        _restart_panel_service()
         return _render_home_assistant(load_config(config_path), message="Token gelöscht und Panel-Service neu gestartet.")
 
     @app.route("/home-assistant/test", methods=["GET", "POST"])
@@ -522,9 +696,28 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
                 ("humidity", config.entities.humidity),
             ):
                 result = client.get_state(entity_id)
-                parts.append(f"{label}: {result.detail if not result.ok else result.data.get('state', 'unknown') if isinstance(result.data, dict) else 'ok'}")
+                parts.append(
+                    f"{label}: {result.detail if not result.ok else result.data.get('state', 'unknown') if isinstance(result.data, dict) else 'ok'}"
+                )
         message = " | ".join(parts)
         return _render_home_assistant(config, message=message)
+
+    @app.get("/dashboard")
+    def dashboard_page() -> str:
+        return _render_dashboard(current_config())
+
+    @app.post("/dashboard/save")
+    def dashboard_save() -> str:
+        config = current_config()
+        raw = read_config_data(config_path)
+        ok, detail, merged = _merge_dashboard_config(raw, request.form)
+        if not ok:
+            return _render_dashboard(config, error=detail)
+        saved, save_detail = _save_config_data(merged)
+        if not saved:
+            return _render_dashboard(config, error=save_detail)
+        _restart_panel_service()
+        return _render_dashboard(load_config(config_path), message="Dashboard gespeichert und Panel-Service neu gestartet.")
 
     @app.get("/api/home-assistant/status")
     def home_assistant_status_api() -> Response:
@@ -546,6 +739,11 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
         config = current_config()
         rows = _entity_rows(_ha_client(config))
         return _json_response({"ok": True, "entities": rows})
+
+    @app.get("/api/dashboard")
+    def dashboard_api() -> Response:
+        config = current_config()
+        return _json_response({"ok": True, "dashboard": _config_payload(config)["dashboard"]})
 
     return app
 

@@ -7,6 +7,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
+from app.ui.models import DashboardConfig, DashboardPageConfig, DashboardTileConfig
+
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "home_assistant": {
@@ -34,9 +36,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rollback_on_failed_healthcheck": True,
     },
     "entities": {
-        "main_light": "light.ikea_of_sweden_ormanas_led_strip",
+        "main_light": "switch.lampe_wohnzimmer",
         "temperature": "sensor.tesla_wall_connector_mcu_temperatur",
         "humidity": "sensor.solaredge_speicherniveau",
+    },
+    "dashboard": {
+        "pages": [],
     },
     "admin": {
         "pin": "",
@@ -78,7 +83,7 @@ class UpdateConfig:
 
 @dataclass(slots=True)
 class EntityConfig:
-    main_light: str = "light.extended_color_light_3"
+    main_light: str = "switch.lampe_wohnzimmer"
     temperature: str = "sensor.wohnzimmer_temperatur"
     humidity: str = "sensor.wohnzimmer_luftfeuchtigkeit"
 
@@ -95,6 +100,7 @@ class AppConfig:
     touch: TouchConfig = field(default_factory=TouchConfig)
     updates: UpdateConfig = field(default_factory=UpdateConfig)
     entities: EntityConfig = field(default_factory=EntityConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     admin: AdminConfig = field(default_factory=AdminConfig)
     source_path: Path | None = None
     exists: bool = False
@@ -192,6 +198,116 @@ def _section(data: dict[str, Any], key: str) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _normalize_entity_id(value: str) -> str:
+    return value.strip()
+
+
+def _humanize_entity_label(entity_id: str) -> str:
+    object_id = entity_id.split(".", 1)[1] if "." in entity_id else entity_id
+    parts = [part for part in object_id.replace("-", "_").split("_") if part]
+    if not parts:
+        return entity_id
+    return " ".join(part.capitalize() for part in parts)
+
+
+def _tile(tile_id: str, tile_type: str, entity_id: str, label: str, action: str = "toggle", icon: str = "", info: str = "", order: int = 0) -> dict[str, Any]:
+    return {
+        "id": tile_id,
+        "type": tile_type,
+        "entity_id": entity_id,
+        "label": label,
+        "action": action,
+        "icon": icon,
+        "info": info,
+        "order": order,
+    }
+
+
+def _default_dashboard_pages(entities: dict[str, Any]) -> dict[str, Any]:
+    main_light = _normalize_entity_id(str(entities.get("main_light", "")))
+    temperature = _normalize_entity_id(str(entities.get("temperature", "")))
+    humidity = _normalize_entity_id(str(entities.get("humidity", "")))
+
+    home_tiles: list[dict[str, Any]] = []
+    lights_tiles: list[dict[str, Any]] = []
+    switches_tiles: list[dict[str, Any]] = []
+
+    if main_light:
+        domain = main_light.split(".", 1)[0]
+        tile = _tile(
+            "main_light",
+            "entity",
+            main_light,
+            _humanize_entity_label(main_light),
+            "toggle",
+            info="Hauptlicht",
+            order=0,
+        )
+        home_tiles.append(tile)
+        if domain in {"light", "switch", "input_boolean"}:
+            lights_tiles.append(tile)
+        if domain in {"switch", "input_boolean"}:
+            switches_tiles.append(tile)
+    if temperature:
+        home_tiles.append(_tile("temperature", "sensor", temperature, _humanize_entity_label(temperature), "none", info="Temperatur", order=1))
+    if humidity:
+        home_tiles.append(_tile("humidity", "sensor", humidity, _humanize_entity_label(humidity), "none", info="Luftfeuchte", order=2))
+
+    return {
+        "pages": [
+            {"id": "home", "label": "Home", "tiles": home_tiles},
+            {"id": "lights", "label": "Lampen", "tiles": lights_tiles},
+            {"id": "switches", "label": "Schalter", "tiles": switches_tiles},
+            {"id": "actions", "label": "Aktionen", "tiles": []},
+            {"id": "system", "label": "System", "tiles": []},
+        ]
+    }
+
+
+def _normalize_tile(tile: Any, fallback_index: int = 0) -> dict[str, Any]:
+    if not isinstance(tile, dict):
+        return {}
+    return {
+        "id": str(tile.get("id") or f"tile_{fallback_index}"),
+        "type": str(tile.get("type", "entity")),
+        "entity_id": str(tile.get("entity_id", "")),
+        "label": str(tile.get("label", "")),
+        "action": str(tile.get("action", "toggle")),
+        "icon": str(tile.get("icon", "")),
+        "info": str(tile.get("info", "")),
+        "order": int(tile.get("order", fallback_index) or fallback_index),
+    }
+
+
+def _normalize_dashboard(raw_dashboard: Any, entities: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw_dashboard, dict):
+        return _default_dashboard_pages(entities)
+    pages = raw_dashboard.get("pages", [])
+    normalized_pages: list[dict[str, Any]] = []
+    if isinstance(pages, list) and pages:
+        for page_index, page in enumerate(pages):
+            if not isinstance(page, dict):
+                continue
+            page_id = str(page.get("id", f"page_{page_index}")).strip() or f"page_{page_index}"
+            label = str(page.get("label", page_id)).strip() or page_id
+            tiles = page.get("tiles", [])
+            normalized_tiles: list[dict[str, Any]] = []
+            if isinstance(tiles, list):
+                for tile_index, tile in enumerate(tiles):
+                    normalized = _normalize_tile(tile, tile_index)
+                    if normalized:
+                        normalized_tiles.append(normalized)
+            normalized_pages.append({"id": page_id, "label": label, "tiles": normalized_tiles})
+    if not normalized_pages:
+        return _default_dashboard_pages(entities)
+    known_ids = {page["id"] for page in normalized_pages}
+    defaults = _default_dashboard_pages(entities)["pages"]
+    for page in defaults:
+        if page["id"] not in known_ids:
+            normalized_pages.append(page)
+    return {"pages": normalized_pages}
+
+
 def load_config(path: Path) -> AppConfig:
     exists = path.exists()
     loaded = _load_yaml(path)
@@ -205,6 +321,8 @@ def load_config(path: Path) -> AppConfig:
     merged_home_assistant = dict(_section(merged, "home_assistant"))
     merged_home_assistant["url"] = _normalize_optional_home_assistant_url(merged_home_assistant.get("url", ""))
     merged["home_assistant"] = merged_home_assistant
+    merged_entities = dict(_section(merged, "entities"))
+    merged["dashboard"] = _normalize_dashboard(merged.get("dashboard"), merged_entities)
 
     return AppConfig(
         home_assistant=HomeAssistantConfig(**_section(merged, "home_assistant")),
@@ -212,6 +330,21 @@ def load_config(path: Path) -> AppConfig:
         touch=TouchConfig(**_section(merged, "touch")),
         updates=UpdateConfig(**_section(merged, "updates")),
         entities=EntityConfig(**_section(merged, "entities")),
+        dashboard=DashboardConfig(
+            pages=[
+                DashboardPageConfig(
+                    id=str(page.get("id", "")),
+                    label=str(page.get("label", "")),
+                    tiles=[
+                        DashboardTileConfig(**_normalize_tile(tile, index))
+                        for index, tile in enumerate(page.get("tiles", []))
+                        if _normalize_tile(tile, index)
+                    ],
+                )
+                for page in merged["dashboard"].get("pages", [])
+                if isinstance(page, dict)
+            ]
+        ),
         admin=AdminConfig(**_section(merged, "admin")),
         source_path=path,
         exists=exists,
