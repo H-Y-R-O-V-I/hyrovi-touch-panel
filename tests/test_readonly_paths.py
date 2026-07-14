@@ -122,10 +122,10 @@ class ReadOnlyPathTests(unittest.TestCase):
     @patch("app.ha.client.requests.request")
     def test_admin_home_assistant_test_uses_only_get_requests(self, mock_request) -> None:
         mock_request.side_effect = [
-            self._response(200, {"message": "ok"}),
             self._response(200, [
                 {"entity_id": "switch.lampe_wohnzimmer", "state": "off", "attributes": {"friendly_name": "Wohnzimmer"}},
             ]),
+            self._response(200, {"message": "ok"}),
             self._response(200, [
                 {"entity_id": "switch.lampe_wohnzimmer", "state": "off", "attributes": {"friendly_name": "Wohnzimmer"}},
             ]),
