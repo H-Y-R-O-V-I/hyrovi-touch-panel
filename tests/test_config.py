@@ -51,6 +51,65 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(config.home_assistant.url, "http://homeassistant.local:8123")
             self.assertEqual(config.home_assistant.token, "secret")
 
+    def test_existing_dashboard_is_not_extended(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text(
+                yaml.safe_dump(
+                    {
+                        "dashboard": {
+                            "pages": [
+                                {
+                                    "id": "home",
+                                    "label": "Home",
+                                    "visible": True,
+                                    "order": 0,
+                                    "tiles": [
+                                        {
+                                            "id": "lamp",
+                                            "type": "entity",
+                                            "page": "home",
+                                            "entity_id": "switch.lampe_wohnzimmer",
+                                            "label": "Lampe Wohnzimmer",
+                                            "action": "toggle",
+                                            "visible": True,
+                                            "order": 0,
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            self.assertEqual(len(config.dashboard.pages), 1)
+            self.assertEqual(config.dashboard.pages[0].id, "home")
+            self.assertEqual(len(config.dashboard.pages[0].tiles), 1)
+            self.assertEqual(config.dashboard.pages[0].tiles[0].id, "lamp")
+
+    def test_missing_dashboard_uses_fallback_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text(
+                yaml.safe_dump(
+                    {
+                        "entities": {
+                            "main_light": "switch.lampe_wohnzimmer",
+                            "temperature": "sensor.temp",
+                            "humidity": "sensor.humidity",
+                        }
+                    },
+                    sort_keys=False,
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            self.assertGreaterEqual(len(config.dashboard.pages), 1)
+            self.assertEqual(config.dashboard.pages[0].id, "home")
+
 
 if __name__ == "__main__":
     unittest.main()

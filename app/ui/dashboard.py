@@ -16,6 +16,12 @@ from app.ui.theme import BASE_HEIGHT, BASE_WIDTH, CONTENT_BOTTOM, CONTENT_TOP, H
 
 
 THEME = Theme()
+STATE_LABELS = {
+    "on": "Ein",
+    "off": "Aus",
+    "unavailable": "Nicht verfügbar",
+    "unknown": "Unbekannt",
+}
 
 
 @dataclass(slots=True)
@@ -121,11 +127,13 @@ class DashboardApp:
         self.fonts["button"] = pygame.font.SysFont("DejaVu Sans", max(17, base + 1), bold=True)
 
     def _page_order(self) -> list[str]:
-        preferred = ["home", "lights", "switches", "actions", "system"]
-        pages = [page.id for page in self.config.dashboard.pages if page.id]
-        ordered = [page_id for page_id in preferred if page_id in pages]
-        ordered.extend(page_id for page_id in pages if page_id not in ordered)
-        return ordered
+        pages = [
+            page
+            for page in self.config.dashboard.pages
+            if page.id and page.visible
+        ]
+        pages.sort(key=lambda page: (int(getattr(page, "order", 0)), page.id))
+        return [page.id for page in pages]
 
     def _handle_events(self) -> None:
         assert self.screen is not None
@@ -299,25 +307,14 @@ class DashboardApp:
                     continue
                 seen.add(entity_id)
                 entity_ids.append(entity_id)
-        for entity_id in (self.config.entities.main_light, self.config.entities.temperature, self.config.entities.humidity):
-            entity_id = entity_id.strip()
-            if entity_id and entity_id not in seen:
-                seen.add(entity_id)
-                entity_ids.append(entity_id)
         return entity_ids
 
     def _state_label(self, payload: dict[str, object] | None) -> str:
         if not payload:
             return "Unbekannt"
         state = str(payload.get("state", "unknown")).lower()
-        if state == "on":
-            return "Ein"
-        if state == "off":
-            return "Aus"
-        if state == "unavailable":
-            return "Nicht verfügbar"
-        if state == "unknown":
-            return "Unbekannt"
+        if state in STATE_LABELS:
+            return STATE_LABELS[state]
         return str(payload.get("state", "unknown"))
 
     def _is_on(self, payload: dict[str, object] | None) -> bool:
@@ -394,23 +391,11 @@ class DashboardApp:
         for tile, rect in zip(cards, rects):
             self._draw_tile(tile, rect, scale)
 
-        if page.id == "system":
-            self._draw_system_summary(scale, offset_x, offset_y)
-
-    def _draw_system_summary(self, scale: float, offset_x: int, offset_y: int) -> None:
-        summary_rect = self._rect(24, 368, 752, 64, scale, offset_x, offset_y)
-        panel(self.screen, summary_rect, THEME.accent, 18)
-        release_text = f"Release {self.snapshot.release} | Letzter Abruf {self.snapshot.last_successful_fetch}"
-        self._draw_multiline(release_text, summary_rect.x + self._scale_value(16, scale), summary_rect.y + self._scale_value(14, scale), "small", THEME.text_muted)
-        refresh_rect = pygame.Rect(summary_rect.right - self._scale_value(160, scale), summary_rect.y + self._scale_value(10, scale), self._scale_value(136, scale), self._scale_value(42, scale))
-        self.targets.append(HitTarget("Aktualisieren", refresh_rect, self._force_refresh, target_id="system:refresh"))
-        self._button(refresh_rect, "Aktualisieren", accent=True)
-
     def _draw_navigation(self, scale: float, offset_x: int, offset_y: int) -> None:
         nav_top = BASE_HEIGHT - NAV_HEIGHT
-        nav_ids = self.page_order[:5] if self.page_order else ["home", "lights", "switches", "actions", "system"]
+        nav_ids = self.page_order
         if not nav_ids:
-            nav_ids = ["home", "lights", "switches", "actions", "system"]
+            return
         width = BASE_WIDTH / max(1, len(nav_ids))
         for index, page_id in enumerate(nav_ids):
             page = self._page_lookup.get(page_id) or DashboardPageConfig(id=page_id, label=page_id.title(), tiles=[])
@@ -420,32 +405,27 @@ class DashboardApp:
 
     def _draw_tile(self, tile: DashboardTileConfig, rect: pygame.Rect, scale: float) -> None:
         state = self._tile_state(tile)
-        accent = THEME.accent
-        if state.busy:
-            accent = THEME.busy
-        elif state.error:
-            accent = THEME.bad
-        elif state.locked:
-            accent = THEME.warn
-        elif state.is_on:
-            accent = THEME.ok
-        fill = THEME.panel if not state.is_on else THEME.panel_alt
+        fill = state.fill or THEME.off_fill
+        border = state.border or THEME.header_border
+        text_color = state.text or THEME.text
+        secondary = state.secondary_text or THEME.text_muted
         rounded_rect(self.screen, rect, fill, 18)
-        pygame.draw.rect(self.screen, accent, rect, width=2, border_radius=18)
-        self._draw_multiline(state.friendly_name or tile.label or tile.id, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(12, scale), "header", THEME.text)
+        pygame.draw.rect(self.screen, border, rect, width=2, border_radius=18)
+        self._draw_multiline(state.friendly_name or tile.label or tile.id, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(12, scale), "header", text_color)
         value = state.state
-        self._draw_multiline(value, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(42, scale), "body", THEME.text)
+        self._draw_multiline(value, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(42, scale), "body", text_color)
         if state.info:
-            self._draw_multiline(state.info, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(74, scale), "small", THEME.text_muted)
+            self._draw_multiline(state.info, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(74, scale), "small", secondary)
         if state.error:
             self._draw_multiline(state.error, rect.x + self._scale_value(16, scale), rect.y + self._scale_value(74, scale), "small", THEME.bad)
         action_label = state.action_label or self._action_label(tile)
         if action_label:
             badge = pygame.Rect(rect.right - self._scale_value(120, scale), rect.bottom - self._scale_value(42, scale), self._scale_value(104, scale), self._scale_value(28, scale))
-            rounded_rect(self.screen, badge, THEME.header_border, 12)
+            rounded_rect(self.screen, badge, THEME.action_fill, 12)
             self._draw_multiline(action_label, badge.x + self._scale_value(10, scale), badge.y + self._scale_value(4, scale), "small", THEME.text)
-        if self._tile_action(tile) is not None:
-            self.targets.append(HitTarget(tile.label or tile.id, rect, self._tile_action(tile), active=state.is_on, target_id=tile.id))
+        action = self._tile_action(tile)
+        if action is not None and state.is_available and not state.busy and not state.locked:
+            self.targets.append(HitTarget(tile.label or tile.id, rect, action, active=state.is_on, target_id=tile.id))
 
     def _button(self, rect: pygame.Rect, label: str, accent: bool = False) -> None:
         fill = THEME.panel_alt if not accent else THEME.accent
@@ -510,80 +490,26 @@ class DashboardApp:
         return None
 
     def _effective_pages(self) -> list[DashboardPageConfig]:
-        pages = list(self.config.dashboard.pages)
-        if pages:
-            return pages
-        return [
-            DashboardPageConfig(id="home", label="Home", tiles=[]),
-            DashboardPageConfig(id="lights", label="Lampen", tiles=[]),
-            DashboardPageConfig(id="switches", label="Schalter", tiles=[]),
-            DashboardPageConfig(id="actions", label="Aktionen", tiles=[]),
-            DashboardPageConfig(id="system", label="System", tiles=[]),
-        ]
+        pages = [page for page in self.config.dashboard.pages if page.visible]
+        pages.sort(key=lambda page: (int(getattr(page, "order", 0)), page.id))
+        return pages
 
     def _page_cards(self, page: DashboardPageConfig) -> list[DashboardTileConfig]:
-        tiles = list(page.tiles)
-        if page.id == "home":
-            tiles = self._merge_tiles(
-                tiles,
-                [
-                    DashboardTileConfig(id="ha_status", type="info", label="Home Assistant", info="Verbindungsstatus"),
-                    DashboardTileConfig(id="main_light", type="entity", entity_id=self.config.entities.main_light, label="Hauptlicht", action="toggle", info="Direkter Zugriff"),
-                    DashboardTileConfig(id="temperature", type="sensor", entity_id=self.config.entities.temperature, label="Temperatur", action="none", info="Realer Wert"),
-                    DashboardTileConfig(id="humidity", type="sensor", entity_id=self.config.entities.humidity, label="Luftfeuchtigkeit", action="none", info="Realer Wert"),
-                ],
-            )
-        elif page.id == "lights":
-            tiles = self._merge_tiles(
-                tiles,
-                [
-                    DashboardTileConfig(id="main_light", type="entity", entity_id=self.config.entities.main_light, label="Lampe", action="toggle", info="Hauptlicht"),
-                ],
-            )
-        elif page.id == "switches":
-            tiles = self._merge_tiles(
-                tiles,
-                [
-                    DashboardTileConfig(id="main_light_switch", type="entity", entity_id=self.config.entities.main_light, label="Schalter", action="toggle", info="Hauptlicht"),
-                ],
-            )
-        elif page.id == "actions":
-            tiles = self._merge_tiles(
-                tiles,
-                [
-                    DashboardTileConfig(id="refresh", type="action", label="Neu laden", action="refresh", info="Nur lesen"),
-                ],
-            )
-        elif page.id == "system":
-            tiles = self._merge_tiles(
-                tiles,
-                [
-                    DashboardTileConfig(id="ha_state", type="info", label="Home Assistant", action="none", info=self.snapshot.ha_state),
-                    DashboardTileConfig(id="release", type="info", label="Release", action="none", info=self.snapshot.release),
-                    DashboardTileConfig(id="last_fetch", type="info", label="Letzter Abruf", action="none", info=self.snapshot.last_successful_fetch),
-                ],
-            )
+        tiles = [tile for tile in page.tiles if tile.visible]
+        tiles.sort(key=lambda tile: (int(getattr(tile, "order", 0)), tile.id))
         return tiles
-
-    def _merge_tiles(self, base: list[DashboardTileConfig], extras: list[DashboardTileConfig]) -> list[DashboardTileConfig]:
-        result = list(base)
-        known = {tile.id for tile in result}
-        for tile in extras:
-            if tile.id not in known:
-                result.append(tile)
-        return result
 
     def _tile_state(self, tile: DashboardTileConfig) -> TileState:
         if tile.id == "ha_status":
-            return TileState(entity_id="", state=self.snapshot.ha_state, info=self.snapshot.error or "Live-Status", friendly_name="Home Assistant", domain="system", action_label="Aktualisieren")
+            return TileState(entity_id="", state=self.snapshot.ha_state, info=self.snapshot.error or "Live-Status", friendly_name="Home Assistant", domain="system", action_label="Aktualisieren", fill=THEME.sensor_fill, border=THEME.sensor_border, text=THEME.text, secondary_text=THEME.text_muted)
         if tile.id == "release":
-            return TileState(entity_id="", state=self.snapshot.release, friendly_name="Release", domain="system")
+            return TileState(entity_id="", state=self.snapshot.release, friendly_name="Release", domain="system", fill=THEME.sensor_fill, border=THEME.sensor_border, text=THEME.text, secondary_text=THEME.text_muted)
         if tile.id == "last_fetch":
-            return TileState(entity_id="", state=self.snapshot.last_successful_fetch, friendly_name="Letzter Abruf", domain="system")
+            return TileState(entity_id="", state=self.snapshot.last_successful_fetch, friendly_name="Letzter Abruf", domain="system", fill=THEME.sensor_fill, border=THEME.sensor_border, text=THEME.text, secondary_text=THEME.text_muted)
         if tile.entity_id:
             payload = self.entity_cache.get(tile.entity_id, {})
             return self._tile_state_for_entity(tile.entity_id, payload, tile=tile)
-        return TileState(entity_id=tile.entity_id, state="--", friendly_name=tile.label or tile.id, domain=tile.type, info=tile.info)
+        return TileState(entity_id=tile.entity_id, state="--", friendly_name=tile.label or tile.id, domain=tile.type, info=tile.info, fill=THEME.off_fill, border=THEME.header_border, text=THEME.text, secondary_text=THEME.text_muted)
 
     def _tile_state_for_entity(self, entity_id: str, payload: dict[str, object], tile: DashboardTileConfig | None = None) -> TileState:
         state = str(payload.get("state", "unknown"))
@@ -599,6 +525,17 @@ class DashboardApp:
             friendly_name = entity_id
         action_label = self._action_label(tile, state=state, domain=domain)
         locked = state.lower() in {"unknown", "unavailable", ""}
+        palette_state = TileState(
+            entity_id=entity_id,
+            state=state,
+            friendly_name=friendly_name,
+            domain=domain,
+            info=info,
+            busy=False,
+            locked=locked,
+            action_label=action_label,
+        )
+        fill, border, text_color, secondary = self._tile_palette(tile, palette_state)
         return TileState(
             entity_id=entity_id,
             state=self._state_label(payload),
@@ -608,6 +545,10 @@ class DashboardApp:
             busy=False,
             locked=locked,
             action_label=action_label,
+            fill=fill,
+            border=border,
+            text=text_color,
+            secondary_text=secondary,
         )
 
     def _action_label(self, tile: DashboardTileConfig | None, *, state: str = "", domain: str = "") -> str:
@@ -651,6 +592,30 @@ class DashboardApp:
         if action == "scene":
             return lambda tile=tile: self._turn_on_scene(tile.entity_id)
         return None
+
+    def _tile_palette(self, tile: DashboardTileConfig, state: TileState) -> tuple[tuple[int, int, int], tuple[int, int, int], tuple[int, int, int], tuple[int, int, int]]:
+        domain = state.domain or (tile.entity_id.split(".", 1)[0] if "." in tile.entity_id else tile.type)
+        lowered = state.state.lower()
+        if state.busy:
+            return THEME.busy_fill, THEME.accent_bright, THEME.text, THEME.text_muted
+        if lowered == "unavailable":
+            return THEME.off_fill, THEME.unavailable_border, THEME.text, THEME.text_muted
+        if lowered == "unknown":
+            return THEME.off_fill, THEME.unknown_border, THEME.text, THEME.text_muted
+        if lowered == "on":
+            if domain == "light":
+                return THEME.light_on_fill, THEME.light_on_fill, THEME.text_dark, THEME.text_dark
+            if domain == "switch":
+                return THEME.switch_on_fill, THEME.switch_on_fill, THEME.text, THEME.text
+            if domain == "input_boolean":
+                return THEME.boolean_on_fill, THEME.boolean_on_fill, THEME.text_dark, THEME.text_dark
+            if domain in {"script", "automation", "scene"} or tile.type in {"script", "automation", "scene", "action"}:
+                return THEME.action_fill, THEME.action_fill, THEME.text, THEME.text_muted
+        if tile.type in {"sensor", "binary_sensor"} or domain in {"sensor", "binary_sensor"}:
+            return THEME.sensor_fill, THEME.sensor_border, THEME.text, THEME.text_muted
+        if tile.type in {"script", "automation", "scene"} or domain in {"script", "automation", "scene"}:
+            return THEME.action_fill, THEME.sensor_border, THEME.text, THEME.text_muted
+        return THEME.off_fill, THEME.header_border, THEME.text, THEME.text_muted
 
     def _turn_on_entity(self, entity_id: str) -> None:
         self._actuate_entity(entity_id, "turn_on")

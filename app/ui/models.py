@@ -8,12 +8,16 @@ from typing import Any
 class DashboardTileConfig:
     id: str
     type: str
+    page: str = ""
     entity_id: str = ""
     label: str = ""
     action: str = "toggle"
     icon: str = ""
     info: str = ""
     order: int = 0
+    visible: bool = True
+    accent: str = ""
+    show_on_home: bool = False
 
 
 @dataclass(slots=True)
@@ -21,6 +25,8 @@ class DashboardPageConfig:
     id: str
     label: str
     tiles: list[DashboardTileConfig] = field(default_factory=list)
+    visible: bool = True
+    order: int = 0
 
 
 @dataclass(slots=True)
@@ -42,6 +48,10 @@ class TileState:
     busy: bool = False
     locked: bool = False
     action_label: str = ""
+    fill: Any = None
+    border: Any = None
+    text: Any = None
+    secondary_text: Any = None
 
     @property
     def is_available(self) -> bool:
@@ -50,4 +60,3 @@ class TileState:
     @property
     def is_on(self) -> bool:
         return self.state.lower() == "on"
-

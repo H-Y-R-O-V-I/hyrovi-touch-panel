@@ -31,59 +31,90 @@ dashboard:
   pages:
     - id: "home"
       label: "Home"
+      visible: true
+      order: 0
       tiles:
         - id: "main_light"
+          page: "home"
           type: "entity"
           entity_id: "switch.lampe_wohnzimmer"
           label: "Lampe Wohnzimmer"
           action: "toggle"
           info: "Hauptlicht"
+          visible: true
+          order: 0
         - id: "temperature"
+          page: "home"
           type: "sensor"
           entity_id: "sensor.tesla_wall_connector_mcu_temperatur"
           label: "Temperatur"
           action: "none"
           info: "Realer Wert"
+          visible: true
+          order: 1
         - id: "humidity"
+          page: "home"
           type: "sensor"
           entity_id: "sensor.solaredge_speicherniveau"
           label: "Luftfeuchtigkeit"
           action: "none"
           info: "Realer Wert"
+          visible: true
+          order: 2
     - id: "lights"
       label: "Lampen"
+      visible: true
+      order: 1
       tiles:
         - id: "main_light"
+          page: "lights"
           type: "entity"
           entity_id: "switch.lampe_wohnzimmer"
           label: "Lampe Wohnzimmer"
           action: "toggle"
           info: "Direkter Zugriff"
+          visible: true
+          order: 0
     - id: "switches"
       label: "Schalter"
+      visible: true
+      order: 2
       tiles:
         - id: "main_light_switch"
+          page: "switches"
           type: "entity"
           entity_id: "switch.lampe_wohnzimmer"
           label: "Schalter Wohnzimmer"
           action: "toggle"
           info: "Hauptlicht"
+          visible: true
+          order: 0
     - id: "actions"
       label: "Aktionen"
+      visible: true
+      order: 3
       tiles:
         - id: "refresh"
+          page: "actions"
           type: "action"
           label: "Neu laden"
           action: "refresh"
           info: "Nur lesen"
+          visible: true
+          order: 0
     - id: "system"
       label: "System"
+      visible: true
+      order: 4
       tiles:
         - id: "ha_state"
+          page: "system"
           type: "info"
           label: "Home Assistant"
           action: "none"
           info: "Verbindungsstatus"
+          visible: true
+          order: 0
 
 admin:
   pin: ""

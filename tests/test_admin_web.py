@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import yaml
 
-from app.admin.web import create_app, _merge_home_assistant_config
+from app.admin.web import create_app, _dashboard_validate, _merge_home_assistant_config
 from app.ha.client import HomeAssistantResult
 
 
@@ -96,7 +96,48 @@ class AdminWebTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("super-secret-token", body)
-        self.assertIn("Dashboard YAML", body)
+        self.assertIn("Entity hinzufügen", body)
+        self.assertIn("Seiten", body)
+
+    def test_dashboard_validation_rejects_duplicate_entity_on_same_page(self) -> None:
+        errors = _dashboard_validate(
+            {
+                "pages": [
+                    {
+                        "id": "home",
+                        "label": "Home",
+                        "tiles": [
+                            {"id": "a", "type": "entity", "entity_id": "switch.lampe_wohnzimmer", "action": "toggle"},
+                            {"id": "b", "type": "entity", "entity_id": "switch.lampe_wohnzimmer", "action": "toggle"},
+                        ],
+                    }
+                ]
+            }
+        )
+        self.assertTrue(any("Duplicate entity" in error for error in errors))
+
+    def test_dashboard_validation_allows_same_entity_on_different_pages(self) -> None:
+        errors = _dashboard_validate(
+            {
+                "pages": [
+                    {
+                        "id": "home",
+                        "label": "Home",
+                        "tiles": [
+                            {"id": "a", "type": "entity", "entity_id": "switch.lampe_wohnzimmer", "action": "toggle"},
+                        ],
+                    },
+                    {
+                        "id": "switches",
+                        "label": "Schalter",
+                        "tiles": [
+                            {"id": "b", "type": "entity", "entity_id": "switch.lampe_wohnzimmer", "action": "toggle"},
+                        ],
+                    },
+                ]
+            }
+        )
+        self.assertFalse(any("Duplicate entity" in error for error in errors))
 
 
 if __name__ == "__main__":

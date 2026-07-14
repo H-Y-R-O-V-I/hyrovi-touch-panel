@@ -8,6 +8,7 @@ import pygame
 
 from app.config.loader import AdminConfig, AppConfig, EntityConfig, HomeAssistantConfig, TouchConfig, UIConfig, UpdateConfig
 from app.ui.dashboard import DashboardApp, HitTarget
+from app.ui.models import DashboardConfig, DashboardPageConfig, DashboardTileConfig
 
 
 class DashboardTouchTests(unittest.TestCase):
@@ -18,6 +19,27 @@ class DashboardTouchTests(unittest.TestCase):
             touch=TouchConfig(mode="pygame", enable_gestures=True),
             updates=UpdateConfig(),
             entities=EntityConfig(main_light="switch.lampe_wohnzimmer", temperature="sensor.temp", humidity="sensor.humidity"),
+            dashboard=DashboardConfig(
+                pages=[
+                    DashboardPageConfig(
+                        id="home",
+                        label="Home",
+                        visible=True,
+                        order=0,
+                        tiles=[
+                            DashboardTileConfig(
+                                id="lamp",
+                                page="home",
+                                type="entity",
+                                entity_id="switch.lampe_wohnzimmer",
+                                label="Lampe Wohnzimmer",
+                                action="toggle",
+                                order=0,
+                            )
+                        ],
+                    )
+                ]
+            ),
             admin=AdminConfig(),
         )
 
@@ -87,6 +109,26 @@ class DashboardTouchTests(unittest.TestCase):
         app._touch_start(self._mouse(pygame.MOUSEBUTTONDOWN, (120, 120)))
         app._touch_end(self._mouse(pygame.MOUSEBUTTONUP, (140, 130)))
         action.assert_called_once()
+
+    def test_configured_page_is_not_extended_with_defaults(self) -> None:
+        app = DashboardApp(self._config())
+        page = app._effective_pages()[0]
+        cards = app._page_cards(page)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0].id, "lamp")
+
+    def test_on_state_uses_full_fill_palette(self) -> None:
+        app = DashboardApp(self._config())
+        tile = DashboardTileConfig(id="lamp", page="home", type="entity", entity_id="switch.lampe_wohnzimmer", label="Lampe Wohnzimmer", action="toggle")
+        state = app._tile_state_for_entity(
+            "switch.lampe_wohnzimmer",
+            {"entity_id": "switch.lampe_wohnzimmer", "state": "on", "attributes": {}},
+            tile=tile,
+        )
+        self.assertIsInstance(state.fill, tuple)
+        self.assertIsInstance(state.border, tuple)
+        self.assertEqual(len(state.fill), 3)
+        self.assertEqual(len(state.border), 3)
 
 
 if __name__ == "__main__":

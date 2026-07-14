@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -210,16 +211,34 @@ def _humanize_entity_label(entity_id: str) -> str:
     return " ".join(part.capitalize() for part in parts)
 
 
-def _tile(tile_id: str, tile_type: str, entity_id: str, label: str, action: str = "toggle", icon: str = "", info: str = "", order: int = 0) -> dict[str, Any]:
+def _tile(
+    tile_id: str,
+    tile_type: str,
+    entity_id: str,
+    label: str,
+    action: str = "toggle",
+    icon: str = "",
+    info: str = "",
+    order: int = 0,
+    *,
+    page: str = "",
+    visible: bool = True,
+    accent: str = "",
+    show_on_home: bool = False,
+) -> dict[str, Any]:
     return {
         "id": tile_id,
         "type": tile_type,
+        "page": page,
         "entity_id": entity_id,
         "label": label,
         "action": action,
         "icon": icon,
         "info": info,
         "order": order,
+        "visible": visible,
+        "accent": accent,
+        "show_on_home": show_on_home,
     }
 
 
@@ -242,24 +261,26 @@ def _default_dashboard_pages(entities: dict[str, Any]) -> dict[str, Any]:
             "toggle",
             info="Hauptlicht",
             order=0,
+            page="home",
+            show_on_home=True,
         )
         home_tiles.append(tile)
         if domain in {"light", "switch", "input_boolean"}:
-            lights_tiles.append(tile)
+            lights_tiles.append({**tile, "page": "lights", "show_on_home": False})
         if domain in {"switch", "input_boolean"}:
-            switches_tiles.append(tile)
+            switches_tiles.append({**tile, "page": "switches", "show_on_home": False})
     if temperature:
-        home_tiles.append(_tile("temperature", "sensor", temperature, _humanize_entity_label(temperature), "none", info="Temperatur", order=1))
+        home_tiles.append(_tile("temperature", "sensor", temperature, _humanize_entity_label(temperature), "none", info="Temperatur", order=1, page="home"))
     if humidity:
-        home_tiles.append(_tile("humidity", "sensor", humidity, _humanize_entity_label(humidity), "none", info="Luftfeuchte", order=2))
+        home_tiles.append(_tile("humidity", "sensor", humidity, _humanize_entity_label(humidity), "none", info="Luftfeuchte", order=2, page="home"))
 
     return {
         "pages": [
-            {"id": "home", "label": "Home", "tiles": home_tiles},
-            {"id": "lights", "label": "Lampen", "tiles": lights_tiles},
-            {"id": "switches", "label": "Schalter", "tiles": switches_tiles},
-            {"id": "actions", "label": "Aktionen", "tiles": []},
-            {"id": "system", "label": "System", "tiles": []},
+            {"id": "home", "label": "Home", "tiles": home_tiles, "visible": True, "order": 0},
+            {"id": "lights", "label": "Lampen", "tiles": lights_tiles, "visible": True, "order": 1},
+            {"id": "switches", "label": "Schalter", "tiles": switches_tiles, "visible": True, "order": 2},
+            {"id": "actions", "label": "Aktionen", "tiles": [], "visible": True, "order": 3},
+            {"id": "system", "label": "System", "tiles": [], "visible": True, "order": 4},
         ]
     }
 
@@ -267,21 +288,33 @@ def _default_dashboard_pages(entities: dict[str, Any]) -> dict[str, Any]:
 def _normalize_tile(tile: Any, fallback_index: int = 0) -> dict[str, Any]:
     if not isinstance(tile, dict):
         return {}
+    tile_id = str(tile.get("id") or f"tile_{fallback_index}").strip()
+    page = str(tile.get("page", "")).strip()
+    entity_id = str(tile.get("entity_id", "")).strip()
+    label = str(tile.get("label", "")).strip()
+    action = str(tile.get("action", "toggle")).strip() or "toggle"
+    tile_type = str(tile.get("type", "entity")).strip() or "entity"
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", tile_id):
+        tile_id = f"tile_{fallback_index}"
     return {
-        "id": str(tile.get("id") or f"tile_{fallback_index}"),
-        "type": str(tile.get("type", "entity")),
-        "entity_id": str(tile.get("entity_id", "")),
-        "label": str(tile.get("label", "")),
-        "action": str(tile.get("action", "toggle")),
+        "id": tile_id,
+        "page": page,
+        "type": tile_type,
+        "entity_id": entity_id,
+        "label": label,
+        "action": action,
         "icon": str(tile.get("icon", "")),
         "info": str(tile.get("info", "")),
         "order": int(tile.get("order", fallback_index) or fallback_index),
+        "visible": bool(tile.get("visible", True)),
+        "accent": str(tile.get("accent", "")),
+        "show_on_home": bool(tile.get("show_on_home", False)),
     }
 
 
-def _normalize_dashboard(raw_dashboard: Any, entities: dict[str, Any]) -> dict[str, Any]:
+def _normalize_dashboard(raw_dashboard: Any, entities: dict[str, Any], *, fallback: bool = False) -> dict[str, Any]:
     if not isinstance(raw_dashboard, dict):
-        return _default_dashboard_pages(entities)
+        return _default_dashboard_pages(entities) if fallback else {"pages": []}
     pages = raw_dashboard.get("pages", [])
     normalized_pages: list[dict[str, Any]] = []
     if isinstance(pages, list) and pages:
@@ -289,6 +322,8 @@ def _normalize_dashboard(raw_dashboard: Any, entities: dict[str, Any]) -> dict[s
             if not isinstance(page, dict):
                 continue
             page_id = str(page.get("id", f"page_{page_index}")).strip() or f"page_{page_index}"
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", page_id):
+                page_id = f"page_{page_index}"
             label = str(page.get("label", page_id)).strip() or page_id
             tiles = page.get("tiles", [])
             normalized_tiles: list[dict[str, Any]] = []
@@ -297,20 +332,24 @@ def _normalize_dashboard(raw_dashboard: Any, entities: dict[str, Any]) -> dict[s
                     normalized = _normalize_tile(tile, tile_index)
                     if normalized:
                         normalized_tiles.append(normalized)
-            normalized_pages.append({"id": page_id, "label": label, "tiles": normalized_tiles})
+            normalized_pages.append(
+                {
+                    "id": page_id,
+                    "label": label,
+                    "tiles": sorted(normalized_tiles, key=lambda item: int(item.get("order", 0))),
+                    "visible": bool(page.get("visible", True)),
+                    "order": int(page.get("order", page_index) or page_index),
+                }
+            )
     if not normalized_pages:
-        return _default_dashboard_pages(entities)
-    known_ids = {page["id"] for page in normalized_pages}
-    defaults = _default_dashboard_pages(entities)["pages"]
-    for page in defaults:
-        if page["id"] not in known_ids:
-            normalized_pages.append(page)
+        return _default_dashboard_pages(entities) if fallback else {"pages": []}
     return {"pages": normalized_pages}
 
 
 def load_config(path: Path) -> AppConfig:
     exists = path.exists()
     loaded = _load_yaml(path)
+    dashboard_present = isinstance(loaded.get("dashboard"), dict)
     if isinstance(loaded.get("home_assistant"), dict):
         loaded = dict(loaded)
         loaded["home_assistant"] = dict(loaded["home_assistant"])
@@ -322,7 +361,7 @@ def load_config(path: Path) -> AppConfig:
     merged_home_assistant["url"] = _normalize_optional_home_assistant_url(merged_home_assistant.get("url", ""))
     merged["home_assistant"] = merged_home_assistant
     merged_entities = dict(_section(merged, "entities"))
-    merged["dashboard"] = _normalize_dashboard(merged.get("dashboard"), merged_entities)
+    merged["dashboard"] = _normalize_dashboard(loaded.get("dashboard"), merged_entities, fallback=not dashboard_present)
 
     return AppConfig(
         home_assistant=HomeAssistantConfig(**_section(merged, "home_assistant")),
@@ -340,6 +379,8 @@ def load_config(path: Path) -> AppConfig:
                         for index, tile in enumerate(page.get("tiles", []))
                         if _normalize_tile(tile, index)
                     ],
+                    visible=bool(page.get("visible", True)),
+                    order=int(page.get("order", 0) or 0),
                 )
                 for page in merged["dashboard"].get("pages", [])
                 if isinstance(page, dict)

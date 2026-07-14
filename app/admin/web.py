@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -126,9 +127,12 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
                 {
                     "id": page.id,
                     "label": page.label,
+                    "visible": page.visible,
+                    "order": page.order,
                     "tiles": [
                         {
                             "id": tile.id,
+                            "page": tile.page,
                             "type": tile.type,
                             "entity_id": tile.entity_id,
                             "label": tile.label,
@@ -136,6 +140,9 @@ def _config_payload(config: AppConfig) -> dict[str, Any]:
                             "icon": tile.icon,
                             "info": tile.info,
                             "order": tile.order,
+                            "visible": tile.visible,
+                            "accent": tile.accent,
+                            "show_on_home": tile.show_on_home,
                         }
                         for tile in page.tiles
                     ],
@@ -170,6 +177,227 @@ def _dashboard_pages_summary(config: AppConfig) -> list[dict[str, Any]]:
             }
         )
     return pages
+
+
+def _dashboard_data(config: AppConfig) -> dict[str, Any]:
+    return {
+        "pages": [
+            {
+                "id": page.id,
+                "label": page.label,
+                "visible": page.visible,
+                "order": page.order,
+                "tiles": [
+                    {
+                        "id": tile.id,
+                        "page": tile.page,
+                        "type": tile.type,
+                        "entity_id": tile.entity_id,
+                        "label": tile.label,
+                        "action": tile.action,
+                        "icon": tile.icon,
+                        "info": tile.info,
+                        "order": tile.order,
+                        "visible": tile.visible,
+                        "accent": tile.accent,
+                        "show_on_home": tile.show_on_home,
+                    }
+                    for tile in page.tiles
+                ],
+            }
+            for page in config.dashboard.pages
+        ]
+    }
+
+
+def _dashboard_state_for_entity(entity_id: str) -> tuple[str, str]:
+    domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
+    if domain in {"light", "switch", "input_boolean"}:
+        return "entity", "toggle"
+    if domain in {"sensor", "binary_sensor"}:
+        return "sensor", "none"
+    if domain in {"script", "automation", "scene"}:
+        return domain, "trigger"
+    return "entity", "toggle"
+
+
+def _dashboard_validate(data: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    pages = data.get("pages", [])
+    if not isinstance(pages, list):
+        return ["Dashboard pages must be a list."]
+    seen_pages: set[str] = set()
+    seen_tiles: set[str] = set()
+    for page in pages:
+        if not isinstance(page, dict):
+            errors.append("Dashboard page must be a mapping.")
+            continue
+        page_id = str(page.get("id", "")).strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", page_id):
+            errors.append(f"Invalid page id: {page_id or '<empty>'}")
+        if page_id in seen_pages:
+            errors.append(f"Duplicate page id: {page_id}")
+        seen_pages.add(page_id)
+        tiles = page.get("tiles", [])
+        if not isinstance(tiles, list):
+            errors.append(f"Tiles for page {page_id} must be a list.")
+            continue
+        seen_entities: set[str] = set()
+        for tile in tiles:
+            if not isinstance(tile, dict):
+                errors.append(f"Tile in page {page_id} must be a mapping.")
+                continue
+            tile_id = str(tile.get("id", "")).strip()
+            entity_id = str(tile.get("entity_id", "")).strip()
+            tile_type = str(tile.get("type", "")).strip() or "entity"
+            action = str(tile.get("action", "")).strip() or "toggle"
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", tile_id):
+                errors.append(f"Invalid tile id: {tile_id or '<empty>'}")
+            if tile_id in seen_tiles:
+                errors.append(f"Duplicate tile id: {tile_id}")
+            seen_tiles.add(tile_id)
+            if tile_type != "info" and not entity_id:
+                errors.append(f"Tile {tile_id} on page {page_id} needs an entity_id.")
+            if entity_id and entity_id in seen_entities:
+                errors.append(f"Duplicate entity on page {page_id}: {entity_id}")
+            if entity_id:
+                seen_entities.add(entity_id)
+                domain = entity_id.split(".", 1)[0]
+                allowed = {
+                    "light": {"toggle", "on", "off"},
+                    "switch": {"toggle", "on", "off"},
+                    "input_boolean": {"toggle", "on", "off"},
+                    "sensor": {"none"},
+                    "binary_sensor": {"none"},
+                    "script": {"trigger"},
+                    "automation": {"trigger"},
+                    "scene": {"trigger"},
+                }.get(domain)
+                if allowed is not None and action not in allowed:
+                    errors.append(f"Action '{action}' is invalid for {entity_id}.")
+    return errors
+
+
+def _dashboard_update_from_form(data: dict[str, Any], form: dict[str, str]) -> tuple[bool, str, dict[str, Any]]:
+    dashboard = data.setdefault("dashboard", {})
+    pages = dashboard.setdefault("pages", [])
+    action = form.get("dashboard_action", "").strip()
+    page_id = form.get("page_id", "").strip()
+    tile_id = form.get("tile_id", "").strip()
+    if action == "add_page":
+        new_id = form.get("new_page_id", "").strip()
+        label = form.get("new_page_label", "").strip() or new_id.title()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", new_id):
+            return False, "Invalid page id.", data
+        pages.append({"id": new_id, "label": label, "visible": True, "order": len(pages), "tiles": []})
+    elif action in {"save_page", "toggle_page", "move_page_up", "move_page_down"}:
+        page = next((item for item in pages if isinstance(item, dict) and str(item.get("id", "")) == page_id), None)
+        if page is None:
+            return False, "Page not found.", data
+        if action == "save_page":
+            new_label = form.get("page_label", "").strip() or page_id
+            page["label"] = new_label
+            page["visible"] = form.get("page_visible", "off") == "on"
+            try:
+                page["order"] = int(form.get("page_order", page.get("order", 0)))
+            except ValueError:
+                return False, "Invalid page order.", data
+        elif action == "toggle_page":
+            page["visible"] = not bool(page.get("visible", True))
+        else:
+            idx = pages.index(page)
+            swap = idx - 1 if action == "move_page_up" else idx + 1
+            if 0 <= swap < len(pages):
+                pages[idx], pages[swap] = pages[swap], pages[idx]
+                pages[idx]["order"] = idx
+                pages[swap]["order"] = swap
+    elif action in {"save_tile", "delete_tile", "move_tile_up", "move_tile_down", "copy_tile_home"}:
+        page = next((item for item in pages if isinstance(item, dict) and str(item.get("id", "")) == page_id), None)
+        if page is None:
+            return False, "Page not found.", data
+        tiles = page.setdefault("tiles", [])
+        tile = next((item for item in tiles if isinstance(item, dict) and str(item.get("id", "")) == tile_id), None)
+        if action == "delete_tile":
+            if tile is None:
+                return False, "Tile not found.", data
+            tiles.remove(tile)
+        elif action in {"move_tile_up", "move_tile_down"}:
+            if tile is None:
+                return False, "Tile not found.", data
+            idx = tiles.index(tile)
+            swap = idx - 1 if action == "move_tile_up" else idx + 1
+            if 0 <= swap < len(tiles):
+                tiles[idx], tiles[swap] = tiles[swap], tiles[idx]
+                tiles[idx]["order"] = idx
+                tiles[swap]["order"] = swap
+        elif action == "copy_tile_home":
+            if tile is None:
+                return False, "Tile not found.", data
+            home = next((item for item in pages if isinstance(item, dict) and str(item.get("id", "")) == "home"), None)
+            if home is None:
+                return False, "Home page not found.", data
+            copied = dict(tile)
+            copied["id"] = f"{tile_id}_home"
+            copied["page"] = "home"
+            copied["show_on_home"] = True
+            copied["order"] = len(home.setdefault("tiles", []))
+            home["tiles"].append(copied)
+        elif action == "save_tile":
+            raw_entity = form.get("entity_id", "").strip()
+            raw_type = form.get("type", "").strip()
+            raw_action = form.get("action", "").strip()
+            raw_label = form.get("label", "").strip()
+            raw_icon = form.get("icon", "").strip()
+            raw_info = form.get("info", "").strip()
+            raw_accent = form.get("accent", "").strip()
+            raw_visible = form.get("visible", "off") == "on"
+            raw_show_on_home = form.get("show_on_home", "off") == "on"
+            try:
+                raw_order = int(form.get("order", tile.get("order", 0) if tile else 0))
+            except ValueError:
+                return False, "Invalid tile order.", data
+            if not tile:
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", tile_id):
+                    return False, "Invalid tile id.", data
+                tile = {
+                    "id": tile_id,
+                    "page": page_id,
+                    "type": raw_type or "entity",
+                    "entity_id": raw_entity,
+                    "label": raw_label,
+                    "action": raw_action or "toggle",
+                    "icon": raw_icon,
+                    "info": raw_info,
+                    "order": raw_order,
+                    "visible": raw_visible,
+                    "accent": raw_accent,
+                    "show_on_home": raw_show_on_home,
+                }
+                tiles.append(tile)
+            else:
+                tile.update(
+                    {
+                        "page": page_id,
+                        "type": raw_type or tile.get("type", "entity"),
+                        "entity_id": raw_entity,
+                        "label": raw_label,
+                        "action": raw_action or tile.get("action", "toggle"),
+                        "icon": raw_icon,
+                        "info": raw_info,
+                        "order": raw_order,
+                        "visible": raw_visible,
+                        "accent": raw_accent,
+                        "show_on_home": raw_show_on_home,
+                    }
+                )
+    else:
+        return False, "Unsupported dashboard action.", data
+
+    data["dashboard"] = dashboard
+    errors = _dashboard_validate(dashboard)
+    if errors:
+        return False, "; ".join(errors), data
+    return True, "Dashboard updated.", data
 
 
 def _save_config_data(data: dict[str, Any]) -> tuple[bool, str]:
@@ -249,6 +477,9 @@ def _merge_dashboard_config(current: dict[str, Any], form: dict[str, str]) -> tu
     if not isinstance(pages, list):
         return False, "Dashboard pages must be a list.", merged
     merged["dashboard"] = dashboard
+    errors = _dashboard_validate(dashboard)
+    if errors:
+        return False, "; ".join(errors), merged
     return True, "Dashboard updated.", merged
 
 
@@ -476,9 +707,16 @@ def _render_home_assistant(config: AppConfig, message: str = "", error: str = ""
     )
 
 
-def _render_dashboard(config: AppConfig, message: str = "", error: str = "") -> str:
+def _render_dashboard(config: AppConfig, message: str = "", error: str = "", page_id: str = "", tile_id: str = "") -> str:
     client = _ha_client(config)
     entity_rows = _entity_rows(client)
+    dashboard = _dashboard_data(config)
+    pages = dashboard.get("pages", [])
+    if not page_id and pages:
+        page_id = str(pages[0].get("id", ""))
+    selected_page = next((page for page in pages if str(page.get("id", "")) == page_id), pages[0] if pages else {})
+    selected_tiles = selected_page.get("tiles", []) if isinstance(selected_page, dict) else []
+    selected_tile = next((tile for tile in selected_tiles if str(tile.get("id", "")) == tile_id), selected_tiles[0] if selected_tiles else {})
     template = """
     <!doctype html>
     <html>
@@ -487,20 +725,38 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "") -> 
       <meta name="viewport" content="width=device-width, initial-scale=1">
       <title>Dashboard - Hyrovi Touch Admin</title>
       <style>
-        :root { color-scheme: dark; --bg:#0f1318; --panel:#18212b; --panel2:#202b36; --text:#eef3f7; --muted:#9fb0bf; --ok:#4dd48a; --bad:#ff7b7b; }
+        :root { color-scheme: dark; --bg:#0f1318; --panel:#18212b; --panel2:#202b36; --text:#eef3f7; --muted:#9fb0bf; --ok:#4dd48a; --bad:#ff7b7b; --accent:#59a4ff; }
         body { margin:0; font-family: system-ui, sans-serif; background: radial-gradient(circle at top, #18212b, #0f1318 60%); color: var(--text); }
-        .wrap { max-width: 1280px; margin: 0 auto; padding: 24px; }
-        .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:16px; }
+        .wrap { max-width: 1400px; margin: 0 auto; padding: 24px; }
+        .grid { display:grid; gap:16px; }
+        .layout { grid-template-columns: 240px minmax(0, 1.2fr) 360px; align-items:start; }
         .card { background: rgba(24,33,43,.94); border:1px solid #273340; border-radius:18px; padding:18px; box-shadow:0 20px 50px rgba(0,0,0,.25); }
-        h1,h2 { margin:0 0 12px 0; }
+        h1,h2,h3 { margin:0 0 12px 0; }
         .muted { color: var(--muted); }
-        .btn { display:inline-block; margin:4px 6px 0 0; padding:12px 16px; border-radius:14px; background: var(--panel2); color: var(--text); text-decoration:none; border:1px solid #324354; }
+        .btn { display:inline-block; margin:4px 6px 0 0; padding:10px 14px; border-radius:14px; background: var(--panel2); color: var(--text); text-decoration:none; border:1px solid #324354; }
         .btn.primary { background: linear-gradient(135deg, #2e7dff, #64b5ff); color:#06111f; font-weight:700; }
-        textarea, input { width:100%; box-sizing:border-box; background:#0d1116; color:var(--text); border:1px solid #324354; border-radius:12px; padding:10px 12px; margin:4px 0 12px; }
-        textarea { min-height: 320px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+        .btn.danger { background:#4a1f24; border-color:#853645; }
+        input, select, textarea { width:100%; box-sizing:border-box; background:#0d1116; color:var(--text); border:1px solid #324354; border-radius:12px; padding:10px 12px; margin:4px 0 12px; }
+        textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
         label { display:block; margin-top:10px; font-weight:600; }
+        .page-item, .tile-item { background:#10151b; border:1px solid #2b3744; border-radius:16px; padding:12px; margin-bottom:10px; }
+        .page-item.active { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(89,164,255,.35) inset; }
+        .tile-preview { padding:14px; border-radius:18px; border:2px solid #364455; background:#151b23; margin-bottom:10px; }
+        .tile-preview .name { font-weight:700; margin-bottom:6px; }
+        .tile-preview .meta { color: var(--muted); font-size:.9rem; line-height:1.35; }
+        .tile-preview.on-light { background:#c68f30; color:#140e05; border-color:#d6aa60; }
+        .tile-preview.on-switch { background:#388ec8; color:#eef7ff; border-color:#77b2dc; }
+        .tile-preview.on-boolean { background:#4abc7c; color:#07140d; border-color:#80d29f; }
+        .tile-preview.off { background:#151b23; color:var(--text); border-color:#3f4b57; }
+        .tile-preview.sensor { background:#1c2430; color:var(--text); border-color:#44607b; }
+        .tile-preview.action { background:#354662; color:var(--text); border-color:#6c8bd1; }
+        .tile-preview.unavailable { background:#151b23; color:var(--text); border-color:#d64a4a; }
+        .tile-preview.unknown { background:#151b23; color:var(--text); border-color:#e08d3b; }
+        .toolbar { display:flex; gap:8px; flex-wrap:wrap; }
         table { width:100%; border-collapse: collapse; }
         th, td { text-align:left; padding:8px 6px; border-bottom:1px solid #273340; vertical-align:top; }
+        .sticky { position: sticky; top: 16px; }
+        details summary { cursor: pointer; font-weight:700; }
       </style>
       <script>
         function filterEntities() {
@@ -509,72 +765,188 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "") -> 
             row.style.display = row.dataset.search.includes(query) ? '' : 'none';
           });
         }
+        function fillTile(entityId, friendly, domain, state) {
+          const form = document.getElementById('tile-form');
+          form.entity_id.value = entityId;
+          form.label.value = friendly || entityId;
+          if (domain === 'light' || domain === 'switch' || domain === 'input_boolean') {
+            form.type.value = 'entity';
+            form.action.value = 'toggle';
+          } else if (domain === 'sensor') {
+            form.type.value = 'sensor';
+            form.action.value = 'none';
+          } else if (domain === 'binary_sensor') {
+            form.type.value = 'binary_sensor';
+            form.action.value = 'none';
+          } else if (domain === 'script' || domain === 'automation' || domain === 'scene') {
+            form.type.value = domain;
+            form.action.value = 'trigger';
+          }
+          form.page_id.focus();
+          form.page_id.scrollIntoView({behavior:'smooth', block:'center'});
+        }
       </script>
     </head>
     <body>
     <div class="wrap">
       <h1>Dashboard</h1>
-      <p class="muted">Hier werden Seiten und Karten des Touch-Dashboards verwaltet. Die gespeicherte Struktur wird vom Panel beim nächsten Start oder Refresh gelesen.</p>
+      <p class="muted">Seiten und Karten werden hier visuell verwaltet. YAML ist nur noch unter "Erweitert" verfügbar.</p>
       {% if message %}<div class="card" style="border-color:#43627e; margin-bottom:16px;">{{ message }}</div>{% endif %}
       {% if error %}<div class="card" style="border-color:#8b4a4a; margin-bottom:16px; color:var(--bad);">{{ error }}</div>{% endif %}
-      <div class="grid">
-        <div class="card">
-          <h2>Bearbeiten</h2>
-          <form method="post" action="{{ url_for('dashboard_save') }}">
-            <label for="dashboard_yaml">Dashboard YAML</label>
-            <textarea id="dashboard_yaml" name="dashboard_yaml">{{ dashboard_yaml }}</textarea>
-            <div>
-              <button class="btn primary" type="submit">Speichern</button>
-              <a class="btn" href="{{ url_for('index') }}">Zurück</a>
-            </div>
-          </form>
-          <p class="muted" style="margin-top:12px;">Ein leerer Wert wird abgelehnt. Token wird hier nie angezeigt.</p>
-        </div>
-        <div class="card">
+      <div class="grid layout">
+        <div class="card sticky">
           <h2>Seiten</h2>
-          <table>
-            <thead>
-              <tr><th>Page</th><th>Karten</th></tr>
-            </thead>
-            <tbody>
-              {% for page in pages %}
-                <tr>
-                  <td><strong>{{ page.label }}</strong><div class="muted">{{ page.id }}</div></td>
-                  <td>
-                    {% if page.tiles %}
-                      {% for tile in page.tiles %}
-                        <div>{{ tile.label or tile.id }} <span class="muted">({{ tile.type }}{% if tile.entity_id %}, {{ tile.entity_id }}{% endif %})</span></div>
-                      {% endfor %}
-                    {% else %}
-                      <div class="muted">Keine Karten</div>
-                    {% endif %}
-                  </td>
-                </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+          {% for page in pages %}
+            <div class="page-item {% if page.id == selected_page.id %}active{% endif %}">
+              <div><strong>{{ page.label }}</strong></div>
+              <div class="muted">{{ page.id }} · {{ page.tiles|length }} Karten · {{ 'sichtbar' if page.visible else 'ausgeblendet' }}</div>
+              <div class="toolbar">
+                <a class="btn" href="{{ url_for('dashboard_page', page_id=page.id) }}">Öffnen</a>
+                <form method="post" action="{{ url_for('dashboard_save') }}" style="display:inline">
+                  <input type="hidden" name="dashboard_action" value="toggle_page">
+                  <input type="hidden" name="page_id" value="{{ page.id }}">
+                  <button class="btn" type="submit">{{ 'Ausblenden' if page.visible else 'Einblenden' }}</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+          <h3>Neue Seite</h3>
+          <form method="post" action="{{ url_for('dashboard_save') }}">
+            <input type="hidden" name="dashboard_action" value="add_page">
+            <label>Seiten-ID</label>
+            <input name="new_page_id" placeholder="z. B. garden">
+            <label>Label</label>
+            <input name="new_page_label" placeholder="Garten">
+            <button class="btn primary" type="submit">Seite hinzufügen</button>
+          </form>
         </div>
-      </div>
-      <div class="grid" style="margin-top:16px;">
         <div class="card">
-          <h2>Entity-Hilfe</h2>
-          <label for="entity-filter">Suchen</label>
-          <input id="entity-filter" oninput="filterEntities()" placeholder="entity_id, friendly name, domain oder state">
-          <table>
-            <thead>
-              <tr><th>Entity-ID</th><th>Friendly Name</th><th>Domain</th><th>Zustand</th></tr>
-            </thead>
-            <tbody>
-              {% for row in entity_rows %}
-                <tr data-entity-row data-search="{{ (row.entity_id ~ ' ' ~ row.friendly_name ~ ' ' ~ row.domain ~ ' ' ~ row.state)|lower }}">
-                  <td>{{ row.entity_id }}</td>
-                  <td>{{ row.friendly_name }}</td>
-                  <td>{{ row.domain }}</td>
-                  <td>{{ row.state }}</td>
-                </tr>
+          <h2>{{ selected_page.label if selected_page else 'Keine Seite' }}</h2>
+          <div class="muted">{{ selected_page.id if selected_page else '' }}</div>
+          <div class="toolbar" style="margin:12px 0 18px;">
+            <form method="post" action="{{ url_for('dashboard_save') }}">
+              <input type="hidden" name="dashboard_action" value="save_page">
+              <input type="hidden" name="page_id" value="{{ selected_page.id }}">
+              <label>Label</label>
+              <input name="page_label" value="{{ selected_page.label }}">
+              <label>Reihenfolge</label>
+              <input name="page_order" type="number" value="{{ selected_page.order }}">
+              <label><input type="checkbox" name="page_visible" {% if selected_page.visible %}checked{% endif %}> Seite sichtbar</label>
+              <button class="btn primary" type="submit">Seite speichern</button>
+            </form>
+          </div>
+          <h3>Karten</h3>
+          {% if selected_tiles %}
+            {% for tile in selected_tiles %}
+              {% set state = tile.state|lower %}
+              <div class="tile-preview {% if state == 'on' %}{% if tile.type == 'sensor' %}sensor{% elif tile.type in ['script', 'automation', 'scene', 'action'] %}action{% elif tile.entity_id.startswith('light.') %}on-light{% elif tile.entity_id.startswith('switch.') %}on-switch{% elif tile.entity_id.startswith('input_boolean.') %}on-boolean{% else %}on-switch{% endif %}{% elif state == 'unavailable' %}unavailable{% elif state == 'unknown' %}unknown{% elif tile.type in ['sensor', 'binary_sensor'] %}sensor{% else %}off{% endif %}">
+                <div class="name">{{ tile.label or tile.id }}</div>
+                <div class="meta">
+                  Entity: {{ tile.entity_id or 'kein Entity' }}<br>
+                  Domain: {{ tile.entity_id.split('.')[0] if '.' in tile.entity_id else tile.type }}<br>
+                  Zustand: {{ tile.state }}<br>
+                  Typ: {{ tile.type }}<br>
+                  Aktion: {{ tile.action }}<br>
+                  Reihenfolge: {{ tile.order }}
+                </div>
+                <div class="toolbar" style="margin-top:10px;">
+                  <a class="btn" href="{{ url_for('dashboard_page', page_id=selected_page.id, tile_id=tile.id) }}">Bearbeiten</a>
+                  <form method="post" action="{{ url_for('dashboard_save') }}" style="display:inline">
+                    <input type="hidden" name="dashboard_action" value="delete_tile">
+                    <input type="hidden" name="page_id" value="{{ selected_page.id }}">
+                    <input type="hidden" name="tile_id" value="{{ tile.id }}">
+                    <button class="btn danger" type="submit">Entfernen</button>
+                  </form>
+                  <form method="post" action="{{ url_for('dashboard_save') }}" style="display:inline">
+                    <input type="hidden" name="dashboard_action" value="move_tile_up">
+                    <input type="hidden" name="page_id" value="{{ selected_page.id }}">
+                    <input type="hidden" name="tile_id" value="{{ tile.id }}">
+                    <button class="btn" type="submit">Nach oben</button>
+                  </form>
+                  <form method="post" action="{{ url_for('dashboard_save') }}" style="display:inline">
+                    <input type="hidden" name="dashboard_action" value="move_tile_down">
+                    <input type="hidden" name="page_id" value="{{ selected_page.id }}">
+                    <input type="hidden" name="tile_id" value="{{ tile.id }}">
+                    <button class="btn" type="submit">Nach unten</button>
+                  </form>
+                  <form method="post" action="{{ url_for('dashboard_save') }}" style="display:inline">
+                    <input type="hidden" name="dashboard_action" value="copy_tile_home">
+                    <input type="hidden" name="page_id" value="{{ selected_page.id }}">
+                    <input type="hidden" name="tile_id" value="{{ tile.id }}">
+                    <button class="btn" type="submit">Auf Home kopieren</button>
+                  </form>
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="muted">Auf dieser Seite sind noch keine Karten konfiguriert.</div>
+          {% endif %}
+        </div>
+        <div class="card sticky">
+          <h2>{% if selected_tile and selected_tile.id %}Karte bearbeiten{% else %}Entity hinzufügen{% endif %}</h2>
+          <form id="tile-form" method="post" action="{{ url_for('dashboard_save') }}">
+            <input type="hidden" name="dashboard_action" value="save_tile">
+            <label>Seite</label>
+            <select name="page_id">
+              {% for page in pages %}
+                <option value="{{ page.id }}" {% if page.id == selected_page.id %}selected{% endif %}>{{ page.label }}</option>
               {% endfor %}
-            </tbody>
-          </table>
+            </select>
+            <label>Karten-ID</label>
+            <input name="tile_id" value="{{ selected_tile.id if selected_tile else '' }}" placeholder="z. B. living_room_light">
+            <label>Entity</label>
+            <input name="entity_id" value="{{ selected_tile.entity_id if selected_tile else '' }}" placeholder="switch.lampe_wohnzimmer">
+            <label>Label</label>
+            <input name="label" value="{{ selected_tile.label if selected_tile else '' }}">
+            <label>Typ</label>
+            <select name="type">
+              {% for item in ['entity','sensor','binary_sensor','script','automation','scene','info','action'] %}
+                <option value="{{ item }}" {% if selected_tile and selected_tile.type == item %}selected{% endif %}>{{ item }}</option>
+              {% endfor %}
+            </select>
+            <label>Aktion</label>
+            <select name="action">
+              {% for item in ['toggle','none','trigger','on','off','refresh'] %}
+                <option value="{{ item }}" {% if selected_tile and selected_tile.action == item %}selected{% endif %}>{{ item }}</option>
+              {% endfor %}
+            </select>
+            <label>Icon</label>
+            <input name="icon" value="{{ selected_tile.icon if selected_tile else '' }}">
+            <label>Akzentfarbe</label>
+            <input name="accent" value="{{ selected_tile.accent if selected_tile else '' }}" placeholder="#f2c14e">
+            <label>Zusatztext</label>
+            <input name="info" value="{{ selected_tile.info if selected_tile else '' }}">
+            <label>Reihenfolge</label>
+            <input name="order" type="number" value="{{ selected_tile.order if selected_tile else 0 }}">
+            <label><input type="checkbox" name="visible" {% if not selected_tile or selected_tile.visible %}checked{% endif %}> Karte sichtbar</label>
+            <label><input type="checkbox" name="show_on_home" {% if selected_tile and selected_tile.show_on_home %}checked{% endif %}> Auf Home anzeigen</label>
+            <button class="btn primary" type="submit">Speichern</button>
+          </form>
+          <h3 style="margin-top:18px;">Entities</h3>
+          <input id="entity-filter" oninput="filterEntities()" placeholder="entity_id, Friendly Name, Domain, Zustand">
+          <div style="max-height: 250px; overflow:auto;">
+            <table>
+              <thead><tr><th>Entity-ID</th><th>Name</th><th>Domain</th><th>Zustand</th></tr></thead>
+              <tbody>
+                {% for row in entity_rows %}
+                  <tr data-entity-row data-search="{{ (row.entity_id ~ ' ' ~ row.friendly_name ~ ' ' ~ row.domain ~ ' ' ~ row.state)|lower }}">
+                    <td><a href="#" onclick="fillTile({{ row.entity_id|tojson }}, {{ row.friendly_name|tojson }}, {{ row.domain|tojson }}, {{ row.state|tojson }}); return false;">{{ row.entity_id }}</a></td>
+                    <td>{{ row.friendly_name }}</td>
+                    <td>{{ row.domain }}</td>
+                    <td>{{ row.state }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <details style="margin-top:16px;">
+            <summary>Erweitert</summary>
+            <form method="post" action="{{ url_for('dashboard_save') }}">
+              <input type="hidden" name="dashboard_action" value="save_raw">
+              <textarea name="dashboard_yaml">{{ dashboard_yaml }}</textarea>
+              <button class="btn" type="submit">YAML speichern</button>
+            </form>
+          </details>
         </div>
       </div>
     </div>
@@ -583,9 +955,12 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "") -> 
     """
     return render_template_string(
         template,
-        dashboard_yaml=_dashboard_yaml(config),
-        pages=_dashboard_pages_summary(config),
+        pages=pages,
+        selected_page=selected_page or {"id": "", "label": "", "visible": True, "order": 0},
+        selected_tiles=selected_tiles,
+        selected_tile=selected_tile or {"id": "", "entity_id": "", "label": "", "type": "entity", "action": "toggle", "icon": "", "info": "", "order": 0, "visible": True, "accent": "", "show_on_home": False},
         entity_rows=entity_rows,
+        dashboard_yaml=_dashboard_yaml(config),
         message=message,
         error=error,
     )
@@ -704,20 +1079,39 @@ def create_app(config_path: Path = CONFIG_FILE) -> Flask:
 
     @app.get("/dashboard")
     def dashboard_page() -> str:
-        return _render_dashboard(current_config())
+        return _render_dashboard(
+            current_config(),
+            page_id=request.args.get("page_id", ""),
+            tile_id=request.args.get("tile_id", ""),
+        )
 
     @app.post("/dashboard/save")
     def dashboard_save() -> str:
         config = current_config()
         raw = read_config_data(config_path)
-        ok, detail, merged = _merge_dashboard_config(raw, request.form)
+        before = load_config(config_path)
+        action = request.form.get("dashboard_action", "").strip()
+        if action == "save_raw":
+            ok, detail, merged = _merge_dashboard_config(raw, request.form)
+        else:
+            ok, detail, merged = _dashboard_update_from_form(raw, request.form)
         if not ok:
-            return _render_dashboard(config, error=detail)
+            return _render_dashboard(config, error=detail, page_id=request.form.get("page_id", ""), tile_id=request.form.get("tile_id", ""))
+        try:
+            _ = load_config(config_path)
+        except Exception as exc:
+            return _render_dashboard(config, error=f"Konfiguration konnte nicht geladen werden: {exc}", page_id=request.form.get("page_id", ""), tile_id=request.form.get("tile_id", ""))
         saved, save_detail = _save_config_data(merged)
         if not saved:
-            return _render_dashboard(config, error=save_detail)
+            return _render_dashboard(config, error=save_detail, page_id=request.form.get("page_id", ""), tile_id=request.form.get("tile_id", ""))
         _restart_panel_service()
-        return _render_dashboard(load_config(config_path), message="Dashboard gespeichert und Panel-Service neu gestartet.")
+        reloaded = load_config(config_path)
+        health = _ha_client(reloaded).healthcheck()
+        if not health.ok and before.raw:
+            _save_config_data(before.raw)
+            _restart_panel_service()
+            return _render_dashboard(before, error=f"Panel-Healthcheck fehlgeschlagen: {health.detail}", page_id=request.form.get("page_id", ""), tile_id=request.form.get("tile_id", ""))
+        return _render_dashboard(reloaded, message="Dashboard gespeichert und Panel-Service neu gestartet.", page_id=request.form.get("page_id", ""), tile_id=request.form.get("tile_id", ""))
 
     @app.get("/api/home-assistant/status")
     def home_assistant_status_api() -> Response:
