@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 import requests
@@ -137,6 +138,18 @@ class HomeAssistantClient:
         domain, _, _object_id = entity_id.partition(".")
         return domain.strip().lower()
 
+    def _refresh_state_until(self, entity_id: str, expected_state: str, *, attempts: int = 5, delay: float = 0.5) -> HomeAssistantResult:
+        latest = self.get_state(entity_id)
+        if latest.ok and str((latest.data or {}).get("state", "")).lower() == expected_state:
+            return latest
+
+        for _ in range(attempts - 1):
+            time.sleep(delay)
+            latest = self.get_state(entity_id)
+            if latest.ok and str((latest.data or {}).get("state", "")).lower() == expected_state:
+                return latest
+        return latest
+
     def toggle_light(self, entity_id: str) -> HomeAssistantResult:
         if not self.enabled:
             current = self.get_state(entity_id)
@@ -165,10 +178,13 @@ class HomeAssistantClient:
             )
         if state == "on":
             service = "turn_off"
+            expected_state = "off"
         elif state == "off":
             service = "turn_on"
+            expected_state = "on"
         elif state in {"unknown", "unavailable", ""}:
             service = "turn_on"
+            expected_state = "on"
         else:
             return HomeAssistantResult(
                 ok=False,
@@ -178,9 +194,9 @@ class HomeAssistantClient:
             )
 
         service_result = self.call_service(domain, service, {"entity_id": entity_id})
+        refreshed = self._refresh_state_until(entity_id, expected_state)
+        if refreshed.ok and str((refreshed.data or {}).get("state", "")).lower() == expected_state:
+            return refreshed
         if not service_result.ok:
             return service_result
-        refreshed = self.get_state(entity_id)
-        if not refreshed.ok:
-            return refreshed
         return refreshed

@@ -100,12 +100,29 @@ class HomeAssistantClientTests(unittest.TestCase):
         mock_request.side_effect = [
             self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
             self._response(500, {"message": "boom"}),
+            self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "light.test", "state": "off", "attributes": {}}),
         ]
         client = HomeAssistantClient("http://homeassistant.local:8123", "token")
         result = client.toggle_light("light.test")
         self.assertFalse(result.ok)
         self.assertIn("HTTP 500", result.detail)
-        self.assertEqual(mock_request.call_count, 2)
+        self.assertEqual(mock_request.call_count, 7)
+
+    @patch("app.ha.client.requests.request")
+    def test_service_error_but_state_changes_is_success(self, mock_request) -> None:
+        mock_request.side_effect = [
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(500, {"message": "boom"}),
+            self._response(200, {"entity_id": "switch.test", "state": "on", "attributes": {}}),
+        ]
+        client = HomeAssistantClient("http://homeassistant.local:8123", "token")
+        result = client.toggle_light("switch.test")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["state"], "on")
 
 
 if __name__ == "__main__":
