@@ -5,6 +5,7 @@ import time
 from typing import Any
 
 import requests
+from requests.exceptions import InvalidURL
 
 from app.config.loader import AppConfig, HomeAssistantUrlError, normalize_home_assistant_url
 
@@ -81,7 +82,7 @@ class HomeAssistantClient:
             else:
                 detail = f"Connection error while contacting Home Assistant: {exc}"
             return HomeAssistantResult(ok=False, source="ha", detail=detail)
-        except requests.InvalidURL as exc:
+        except InvalidURL as exc:
             return HomeAssistantResult(ok=False, source="config", detail=f"Invalid Home Assistant URL: {exc}")
         except requests.RequestException as exc:
             return HomeAssistantResult(ok=False, source="ha", detail=f"Home Assistant request failed: {exc}")
