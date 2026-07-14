@@ -210,6 +210,15 @@ def _dashboard_data(config: AppConfig) -> dict[str, Any]:
     }
 
 
+def _dashboard_tile_ids(config: AppConfig) -> list[str]:
+    tile_ids: set[str] = set()
+    for page in config.dashboard.pages:
+        for tile in page.tiles:
+            if tile.id:
+                tile_ids.add(tile.id)
+    return sorted(tile_ids)
+
+
 def _dashboard_state_for_entity(entity_id: str) -> tuple[str, str]:
     domain = entity_id.split(".", 1)[0] if "." in entity_id else ""
     if domain in {"light", "switch", "input_boolean"}:
@@ -284,6 +293,8 @@ def _dashboard_update_from_form(data: dict[str, Any], form: dict[str, str]) -> t
     action = form.get("dashboard_action", "").strip()
     page_id = form.get("page_id", "").strip()
     tile_id = form.get("tile_id", "").strip()
+    new_tile_id = form.get("new_tile_id", "").strip()
+    effective_tile_id = new_tile_id if tile_id == "__new__" else tile_id
     if action == "add_page":
         new_id = form.get("new_page_id", "").strip()
         label = form.get("new_page_label", "").strip() or new_id.title()
@@ -316,7 +327,7 @@ def _dashboard_update_from_form(data: dict[str, Any], form: dict[str, str]) -> t
         if page is None:
             return False, "Page not found.", data
         tiles = page.setdefault("tiles", [])
-        tile = next((item for item in tiles if isinstance(item, dict) and str(item.get("id", "")) == tile_id), None)
+        tile = next((item for item in tiles if isinstance(item, dict) and str(item.get("id", "")) == effective_tile_id), None)
         if action == "delete_tile":
             if tile is None:
                 return False, "Tile not found.", data
@@ -337,7 +348,7 @@ def _dashboard_update_from_form(data: dict[str, Any], form: dict[str, str]) -> t
             if home is None:
                 return False, "Home page not found.", data
             copied = dict(tile)
-            copied["id"] = f"{tile_id}_home"
+            copied["id"] = f"{effective_tile_id}_home"
             copied["page"] = "home"
             copied["show_on_home"] = True
             copied["order"] = len(home.setdefault("tiles", []))
@@ -356,6 +367,10 @@ def _dashboard_update_from_form(data: dict[str, Any], form: dict[str, str]) -> t
                 raw_order = int(form.get("order", tile.get("order", 0) if tile else 0))
             except ValueError:
                 return False, "Invalid tile order.", data
+            if tile_id == "__new__":
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", new_tile_id):
+                    return False, "Invalid tile id.", data
+                tile_id = new_tile_id
             if not tile:
                 if not re.fullmatch(r"[A-Za-z0-9_-]+", tile_id):
                     return False, "Invalid tile id.", data
@@ -711,12 +726,15 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
     client = _ha_client(config)
     entity_rows = _entity_rows(client)
     dashboard = _dashboard_data(config)
+    tile_ids = _dashboard_tile_ids(config)
     pages = dashboard.get("pages", [])
     if not page_id and pages:
         page_id = str(pages[0].get("id", ""))
     selected_page = next((page for page in pages if str(page.get("id", "")) == page_id), pages[0] if pages else {})
     selected_tiles = selected_page.get("tiles", []) if isinstance(selected_page, dict) else []
     selected_tile = next((tile for tile in selected_tiles if str(tile.get("id", "")) == tile_id), selected_tiles[0] if selected_tiles else {})
+    selected_tile_id = str(selected_tile.get("id", "")) if isinstance(selected_tile, dict) else ""
+    new_tile_id = "" if selected_tile_id and selected_tile_id in tile_ids else selected_tile_id
     template = """
     <!doctype html>
     <html>
@@ -765,10 +783,29 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
             row.style.display = row.dataset.search.includes(query) ? '' : 'none';
           });
         }
+        function toggleTileIdInput() {
+          const form = document.getElementById('tile-form');
+          const select = form.querySelector('select[name="tile_id"]');
+          const input = form.querySelector('input[name="new_tile_id"]');
+          if (!select || !input) {
+            return;
+          }
+          const isNew = select.value === '__new__';
+          input.disabled = !isNew;
+          input.style.display = isNew ? '' : 'none';
+        }
         function fillTile(entityId, friendly, domain, state) {
           const form = document.getElementById('tile-form');
           form.entity_id.value = entityId;
           form.label.value = friendly || entityId;
+          const tileIdSelect = form.querySelector('select[name="tile_id"]');
+          const newTileId = form.querySelector('input[name="new_tile_id"]');
+          if (tileIdSelect) {
+            tileIdSelect.value = '__new__';
+          }
+          if (newTileId) {
+            newTileId.value = entityId.replace(/\\./g, '_');
+          }
           if (domain === 'light' || domain === 'switch' || domain === 'input_boolean') {
             form.type.value = 'entity';
             form.action.value = 'toggle';
@@ -784,7 +821,9 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
           }
           form.page_id.focus();
           form.page_id.scrollIntoView({behavior:'smooth', block:'center'});
+          toggleTileIdInput();
         }
+        document.addEventListener('DOMContentLoaded', toggleTileIdInput);
       </script>
     </head>
     <body>
@@ -893,7 +932,13 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
               {% endfor %}
             </select>
             <label>Karten-ID</label>
-            <input name="tile_id" value="{{ selected_tile.id if selected_tile else '' }}" placeholder="z. B. living_room_light">
+            <select name="tile_id" onchange="toggleTileIdInput()">
+              <option value="__new__" {% if not selected_tile_id or selected_tile_id not in tile_ids %}selected{% endif %}>Neue Karten-ID...</option>
+              {% for id in tile_ids %}
+                <option value="{{ id }}" {% if id == selected_tile_id %}selected{% endif %}>{{ id }}</option>
+              {% endfor %}
+            </select>
+            <input name="new_tile_id" value="{{ new_tile_id }}" placeholder="z. B. living_room_light" {% if selected_tile_id and selected_tile_id in tile_ids %}style="display:none;" disabled{% endif %}>
             <label>Entity</label>
             <input name="entity_id" value="{{ selected_tile.entity_id if selected_tile else '' }}" placeholder="switch.lampe_wohnzimmer">
             <label>Label</label>
@@ -959,6 +1004,9 @@ def _render_dashboard(config: AppConfig, message: str = "", error: str = "", pag
         selected_page=selected_page or {"id": "", "label": "", "visible": True, "order": 0},
         selected_tiles=selected_tiles,
         selected_tile=selected_tile or {"id": "", "entity_id": "", "label": "", "type": "entity", "action": "toggle", "icon": "", "info": "", "order": 0, "visible": True, "accent": "", "show_on_home": False},
+        selected_tile_id=selected_tile_id,
+        new_tile_id=new_tile_id,
+        tile_ids=tile_ids,
         entity_rows=entity_rows,
         dashboard_yaml=_dashboard_yaml(config),
         message=message,

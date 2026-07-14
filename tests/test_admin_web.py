@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import yaml
 
-from app.admin.web import create_app, _dashboard_validate, _merge_home_assistant_config
+from app.admin.web import create_app, _dashboard_update_from_form, _dashboard_validate, _merge_home_assistant_config
 from app.ha.client import HomeAssistantResult
 
 
@@ -98,6 +98,8 @@ class AdminWebTests(unittest.TestCase):
         self.assertNotIn("super-secret-token", body)
         self.assertIn("Karte bearbeiten", body)
         self.assertIn("Seiten", body)
+        self.assertIn('name="tile_id"', body)
+        self.assertIn('Neue Karten-ID', body)
 
     def test_dashboard_validation_rejects_duplicate_entity_on_same_page(self) -> None:
         errors = _dashboard_validate(
@@ -138,6 +140,40 @@ class AdminWebTests(unittest.TestCase):
             }
         )
         self.assertFalse(any("Duplicate entity" in error for error in errors))
+
+    def test_dashboard_update_supports_new_tile_id_dropdown(self) -> None:
+        data = {
+            "dashboard": {
+                "pages": [
+                    {
+                        "id": "home",
+                        "label": "Home",
+                        "tiles": [],
+                    }
+                ]
+            }
+        }
+        ok, detail, updated = _dashboard_update_from_form(
+            data,
+            {
+                "dashboard_action": "save_tile",
+                "page_id": "home",
+                "tile_id": "__new__",
+                "new_tile_id": "living_room_light",
+                "entity_id": "switch.lampe_wohnzimmer",
+                "type": "entity",
+                "action": "toggle",
+                "label": "Lampe Wohnzimmer",
+                "icon": "",
+                "info": "",
+                "accent": "",
+                "order": "0",
+            },
+        )
+
+        self.assertTrue(ok)
+        self.assertEqual(detail, "Dashboard updated.")
+        self.assertEqual(updated["dashboard"]["pages"][0]["tiles"][0]["id"], "living_room_light")
 
 
 if __name__ == "__main__":
