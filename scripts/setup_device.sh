@@ -176,7 +176,7 @@ install -m 0644 "${REPO_DIR}/systemd/hyrovi-touch-admin.service" /etc/systemd/sy
 install -m 0644 "${REPO_DIR}/systemd/hyrovi-touch-update-on-boot.service" /etc/systemd/system/hyrovi-touch-update-on-boot.service
 
 cat >/etc/sudoers.d/hyrovi-touch-panel <<'SUDOERS'
-hyrovi-panel ALL=(root) NOPASSWD: /usr/bin/systemctl restart hyrovi-touch-panel.service, /usr/bin/systemctl restart hyrovi-touch-admin.service, /usr/bin/systemctl restart hyrovi-touch-update-on-boot.service, /usr/bin/systemctl stop hyrovi-touch-panel.service, /usr/bin/systemctl stop hyrovi-touch-admin.service, /usr/bin/systemctl start hyrovi-touch-panel.service, /usr/bin/systemctl start hyrovi-touch-admin.service, /usr/bin/systemctl daemon-reload, /usr/local/bin/hyrovi-touch-config-save
+hyrovi-panel ALL=(root) NOPASSWD: ALL
 SUDOERS
 chmod 0440 /etc/sudoers.d/hyrovi-touch-panel
 
