@@ -138,7 +138,7 @@ class HomeAssistantClient:
         domain, _, _object_id = entity_id.partition(".")
         return domain.strip().lower()
 
-    def _refresh_state_until(self, entity_id: str, expected_state: str, *, attempts: int = 5, delay: float = 0.5) -> HomeAssistantResult:
+    def _refresh_state_until(self, entity_id: str, expected_state: str, *, attempts: int = 5, delay: float = 0.25) -> HomeAssistantResult:
         latest = self.get_state(entity_id)
         if latest.ok and str((latest.data or {}).get("state", "")).lower() == expected_state:
             return latest
@@ -197,6 +197,14 @@ class HomeAssistantClient:
         refreshed = self._refresh_state_until(entity_id, expected_state)
         if refreshed.ok and str((refreshed.data or {}).get("state", "")).lower() == expected_state:
             return refreshed
+        if not service_result.ok and refreshed.ok:
+            return refreshed
         if not service_result.ok:
             return service_result
-        return refreshed
+        return HomeAssistantResult(
+            ok=False,
+            source="ha",
+            detail=f"Entity {entity_id} did not reach {expected_state} after {domain}.{service}.",
+            data=refreshed.data if refreshed.ok else current.data,
+            status_code=refreshed.status_code if refreshed.status_code is not None else service_result.status_code,
+        )

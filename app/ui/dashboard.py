@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -41,6 +42,16 @@ class HitTarget:
     active: bool = False
 
 
+@dataclass
+class TouchPress:
+    source: str
+    pointer_id: int | None
+    started_at: float
+    start_pos: tuple[int, int]
+    target: HitTarget | None
+    blocked: bool = False
+
+
 class DashboardApp:
     def __init__(self, config: AppConfig) -> None:
         self.config = config
@@ -52,14 +63,18 @@ class DashboardApp:
         self.last_refresh = 0.0
         self.fonts: dict[str, pygame.font.Font] = {}
         self.targets: list[HitTarget] = []
-        self.touch_origin: tuple[int, int] | None = None
-        self.touch_origin_time = 0.0
+        self.active_press: TouchPress | None = None
+        self.input_enabled_at = 0.0
+        self.last_action_at = 0.0
+        self.tap_move_threshold = 28
+        self.tap_debounce_seconds = 0.25
 
     def run(self) -> int:
         pygame.init()
         pygame.font.init()
         self._setup_display()
         self._load_fonts()
+        self.input_enabled_at = time.monotonic() + 2.0
         self._refresh(force=True)
 
         clock = pygame.time.Clock()
@@ -86,6 +101,7 @@ class DashboardApp:
         pygame.display.set_caption("Hyrovi Touch Panel")
         if self.config.ui.hide_cursor:
             pygame.mouse.set_visible(False)
+        pygame.event.clear()
 
     def _load_fonts(self) -> None:
         if not pygame.font.get_init():
@@ -113,29 +129,79 @@ class DashboardApp:
                 self._touch_end(event)
 
     def _touch_start(self, event: pygame.event.Event) -> None:
+        if self.active_press is not None:
+            return
+        source_info = self._event_source(event)
+        if source_info is None:
+            return
+        source, pointer_id = source_info
+        now = time.monotonic()
         pos = self._event_position(event)
         if pos is None:
             return
-        self.touch_origin = pos
-        self.touch_origin_time = pygame.time.get_ticks() / 1000.0
-        for target in reversed(self.targets):
-            if target.rect.collidepoint(pos):
-                target.action()
-                return
+        target = self._hit_target(pos)
+        self.active_press = TouchPress(
+            source=source,
+            pointer_id=pointer_id,
+            started_at=now,
+            start_pos=pos,
+            target=target,
+            blocked=now < self.input_enabled_at,
+        )
 
     def _touch_end(self, event: pygame.event.Event) -> None:
-        if not self.config.touch.enable_gestures or self.touch_origin is None:
+        press = self.active_press
+        if press is None:
+            return
+        source_info = self._event_source(event)
+        if source_info is None:
+            return
+        source, pointer_id = source_info
+        if source != press.source or pointer_id != press.pointer_id:
             return
         pos = self._event_position(event)
         if pos is None:
+            self.active_press = None
             return
-        delta_x = pos[0] - self.touch_origin[0]
-        delta_y = pos[1] - self.touch_origin[1]
-        if abs(delta_x) > 90 and abs(delta_x) > abs(delta_y):
-            self.page = "lights" if delta_x < 0 else "home"
-        elif abs(delta_y) > 120 and abs(delta_y) > abs(delta_x):
-            self.page = "system"
-        self.touch_origin = None
+        now = time.monotonic()
+        delta_x = pos[0] - press.start_pos[0]
+        delta_y = pos[1] - press.start_pos[1]
+        distance_x = abs(delta_x)
+        distance_y = abs(delta_y)
+        self.active_press = None
+
+        if press.blocked or now < self.input_enabled_at:
+            return
+
+        if distance_x > 90 and distance_x > distance_y:
+            if self.config.touch.enable_gestures:
+                self.page = "lights" if delta_x < 0 else "home"
+            return
+        if distance_y > 120 and distance_y > distance_x:
+            if self.config.touch.enable_gestures:
+                self.page = "system"
+            return
+
+        current_target = self._hit_target(pos)
+        if current_target is None or press.target is None:
+            return
+        if current_target.label != press.target.label or current_target.rect != press.target.rect:
+            return
+        if distance_x > self.tap_move_threshold or distance_y > self.tap_move_threshold:
+            return
+        if now - self.last_action_at < self.tap_debounce_seconds:
+            return
+        self.last_action_at = now
+        current_target.action()
+
+    def _event_source(self, event: pygame.event.Event) -> tuple[str, int | None] | None:
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            if getattr(event, "button", 1) != 1:
+                return None
+            return "mouse", 1
+        if event.type in (pygame.FINGERDOWN, pygame.FINGERUP):
+            return "finger", int(getattr(event, "finger_id", 0))
+        return None
 
     def _event_position(self, event: pygame.event.Event) -> tuple[int, int] | None:
         assert self.screen is not None
@@ -388,6 +454,12 @@ class DashboardApp:
 
     def _set_page(self, page: str) -> None:
         self.page = page
+
+    def _hit_target(self, pos: tuple[int, int]) -> HitTarget | None:
+        for target in reversed(self.targets):
+            if target.rect.collidepoint(pos):
+                return target
+        return None
 
     def _toggle_light(self) -> None:
         if not self.client.enabled:

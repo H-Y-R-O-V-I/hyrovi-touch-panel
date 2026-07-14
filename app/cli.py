@@ -29,6 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("ha-status")
     sub.add_parser("ha-test")
     sub.add_parser("ha-entities")
+    actuator_parser = sub.add_parser("ha-actuator-test")
+    actuator_parser.add_argument("--entity", required=True, help="Entity to actuate for an explicit manual test.")
+    actuator_parser.add_argument("--confirm", action="store_true", help="Required to execute the actuator test.")
     return parser
 
 
@@ -165,6 +168,20 @@ def _ha_entities(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ha_actuator_test(args: argparse.Namespace) -> int:
+    if not args.confirm:
+        print("Refusing to run actuator test without --confirm.")
+        return 2
+
+    client, _config = _ha_client(args)
+    result = client.toggle_light(args.entity)
+    if result.ok and isinstance(result.data, dict):
+        print(f"{args.entity}: ok - {result.data.get('state', 'unknown')}")
+        return 0
+    print(f"{args.entity}: fail - {result.detail}")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -200,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         return _ha_test(args)
     if args.command == "ha-entities":
         return _ha_entities(args)
+    if args.command == "ha-actuator-test":
+        return _ha_actuator_test(args)
     return 1
 
 

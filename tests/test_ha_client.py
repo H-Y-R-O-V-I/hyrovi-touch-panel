@@ -124,6 +124,22 @@ class HomeAssistantClientTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.data["state"], "on")
 
+    @patch("app.ha.client.requests.request")
+    def test_service_success_but_state_does_not_change_is_failure(self, mock_request) -> None:
+        mock_request.side_effect = [
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(200, {"result": "ok"}),
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "switch.test", "state": "off", "attributes": {}}),
+        ]
+        client = HomeAssistantClient("http://homeassistant.local:8123", "token")
+        result = client.toggle_light("switch.test")
+        self.assertFalse(result.ok)
+        self.assertIn("did not reach on", result.detail)
+
 
 if __name__ == "__main__":
     unittest.main()
