@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -158,25 +159,29 @@ def _restart_services() -> None:
 
 
 def _admin_healthcheck(timeout: float = 4.0) -> tuple[bool, str]:
-    try:
-        response = requests.get("http://127.0.0.1:8765/health", timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, dict):
-            return bool(payload.get("ok", False)), str(payload.get("status", "ok"))
-        return True, "Admin healthcheck returned a non-object payload."
-    except requests.HTTPError as exc:
-        response = exc.response
-        status = response.status_code if response is not None else None
-        return False, f"Admin healthcheck failed with HTTP {status if status is not None else 'error'}."
-    except requests.Timeout:
-        return False, "Admin healthcheck timed out."
-    except requests.ConnectionError as exc:
-        return False, f"Admin healthcheck connection error: {exc}"
-    except requests.RequestException as exc:
-        return False, f"Admin healthcheck failed: {exc}"
-    except ValueError as exc:
-        return False, f"Admin healthcheck returned invalid JSON: {exc}"
+    last_error = "Admin healthcheck unavailable."
+    for _ in range(10):
+        try:
+            response = requests.get("http://127.0.0.1:8765/health", timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict):
+                return bool(payload.get("ok", False)), str(payload.get("status", "ok"))
+            return True, "Admin healthcheck returned a non-object payload."
+        except requests.HTTPError as exc:
+            response = exc.response
+            status = response.status_code if response is not None else None
+            return False, f"Admin healthcheck failed with HTTP {status if status is not None else 'error'}."
+        except requests.Timeout:
+            last_error = "Admin healthcheck timed out."
+        except requests.ConnectionError as exc:
+            last_error = f"Admin healthcheck connection error: {exc}"
+        except requests.RequestException as exc:
+            last_error = f"Admin healthcheck failed: {exc}"
+        except ValueError as exc:
+            return False, f"Admin healthcheck returned invalid JSON: {exc}"
+        time.sleep(1.5)
+    return False, last_error
 
 
 def _rollback_link(previous_release: Path) -> None:
