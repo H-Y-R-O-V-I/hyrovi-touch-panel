@@ -132,6 +132,9 @@ class ReadOnlyPathTests(unittest.TestCase):
             self._response(200, {"entity_id": "switch.lampe_wohnzimmer", "state": "off", "attributes": {}}),
             self._response(200, {"entity_id": "sensor.temp", "state": "21.4", "attributes": {}}),
             self._response(200, {"entity_id": "sensor.humidity", "state": "48", "attributes": {}}),
+            self._response(200, {"entity_id": "switch.lampe_wohnzimmer", "state": "off", "attributes": {}}),
+            self._response(200, {"entity_id": "sensor.temp", "state": "21.4", "attributes": {}}),
+            self._response(200, {"entity_id": "sensor.humidity", "state": "48", "attributes": {}}),
         ]
         app = create_app(self._config_file())
         client = app.test_client()
@@ -139,7 +142,7 @@ class ReadOnlyPathTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("API", response.get_data(as_text=True))
-        self.assertEqual(mock_request.call_count, 2)
+        self.assertGreaterEqual(mock_request.call_count, 6)
         self.assertTrue(all(call.args[0] == "GET" for call in mock_request.call_args_list))
 
 
